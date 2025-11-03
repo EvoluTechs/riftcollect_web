@@ -1,0 +1,24 @@
+body{background:#0b0d10;color:#e6e9ef}
+.navbar{background:#0a0c0f!important}
+.card{background:#12151a;color:#e6e9ef;border-color:#1a1f27}
+.form-control,.form-select{background:#0f1216;border-color:#1a1f27;color:#e6e9ef}
+.btn-primary{background:#7353e5;border-color:#7353e5}
+.btn-outline-secondary{border-color:#344055;color:#e6e9ef}
+footer{color:#9aa4b2}
+img{background:#0f1216}
+
+/* Landing */
+.hero{min-height:420px;background:#0f1216 url('../img/hero-banner.php') center/cover no-repeat}
+.hero-overlay{backdrop-filter:saturate(110%)}
+.hero .hero-inner{position:relative;z-index:2}
+.hero .hero-carousel{z-index:1;filter:saturate(105%)}
+.object-fit-cover{object-fit:cover}
+.feature.card{border-color:#1a1f27;background:#141820}
+.feature .h5{color:#e6e9ef}
+.feature p{color:#9aa4b2!important}
+
+/* Navbar brand logo */
+.navbar-brand #brandLogo{height:32px;width:auto;display:block}
+@media (min-width: 992px){
+	.navbar-brand #brandLogo{height:36px}
+}

@@ -1,0 +1,33 @@
+# Root configuration for RiftCollect (OVH-compatible)
+Options -Indexes -Multiviews
+
+<IfModule mod_mime.c>
+  AddType text/plain .txt
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  # Route riot.txt through PHP to ensure exact plain text, no BOM/newline, and proper HEAD handling
+  RewriteRule ^riot\.txt$ riot.php [L]
+
+  # Serve existing files (like riot.txt, images, assets) as-is
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Otherwise, route everything to the SPA shell
+  RewriteRule ^ index.php [L]
+</IfModule>
+
+# Ensure riot.txt is always served as plain text and publicly accessible
+<Files "riot.txt">
+  <IfModule mod_authz_core.c>
+    Require all granted
+  </IfModule>
+  <IfModule mod_headers.c>
+    Header set Content-Type "text/plain; charset=utf-8"
+  </IfModule>
+</Files>
+
+# Note: Do NOT attempt to change ModSecurity settings here on OVH, it may cause 500 errors.
