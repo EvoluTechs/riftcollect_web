@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # RiftCollect
 
 RiftCollect est une application web (PHP + JS) pour la communauté francophone des collectionneurs du TCG Riftbound.
@@ -81,3 +82,7 @@ Le script fait des HEAD sur les URLs du CDN et insère dans `cards_cache` les ca
 
 - Placez ce dossier dans un serveur PHP local (WAMP/XAMPP) ou utilisez `php -S localhost:8000` dans le dossier (si disponible).
 
+=======
+# riftcollect_web
+RiftCollect est une application indépendante créée pour la communauté francophone des collectionneurs du TCG Riftbound.  L’objectif est de proposer un espace simple et visuel pour :  Parcourir la base officielle des cartes (via l’API Riftbound) ;  Gérer sa propre collection (cartes possédées, manquantes, doublons, etc.) 
+>>>>>>> b5c8888a0faa28b74f30cd092fbf0ebc7341cdce
