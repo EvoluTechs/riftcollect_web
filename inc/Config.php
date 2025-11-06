@@ -12,9 +12,18 @@ final class Config
     public static string $DB_DSN;
     public static ?string $DB_USER;
     public static ?string $DB_PASS;
+    public static string $DB_TABLE_PREFIX; // e.g. 'riftcollect_'
 
     public static string $STORAGE_PATH;
     public static array $CDN_IMAGES = [];
+    public static array $ADMIN_EMAILS = [];
+
+    // LLM (ChatGPT/OpenAI) configuration
+    public static int $LLM_ENABLED; // 0|1
+    public static string $LLM_MODEL; // e.g. gpt-4o-mini
+    public static int $LLM_MAX_CALLS; // per run budget
+    public static string $LLM_BASE_URL; // default https://api.openai.com/v1
+    public static ?string $OPENAI_API_KEY; // from env OPENAI_API_KEY
 
     public static function init(): void
     {
@@ -29,12 +38,15 @@ final class Config
         self::$API_BASE_URL = getenv('RIFT_API_BASE') ?: 'https://api.riftbound.example.com/v1';
         self::$API_KEY = getenv('RIFT_API_KEY') ?: null; // put your key in OVH env var if needed
 
-        // Database config: prefer SQLite by default for easy OVH deployment
-        $driver = strtolower(getenv('RC_DB_DRIVER') ?: 'sqlite');
+        // Database config: prefer MySQL by default (can override with RC_DB_DRIVER)
+        $driver = strtolower(getenv('RC_DB_DRIVER') ?: 'mysql');
         if (!in_array($driver, ['sqlite', 'mysql'], true)) {
             $driver = 'sqlite';
         }
         self::$DB_DRIVER = $driver;
+
+        // Table prefix (used everywhere)
+        self::$DB_TABLE_PREFIX = getenv('RC_DB_PREFIX') ?: 'riftcollect_';
 
         if ($driver === 'sqlite') {
             $dbFile = getenv('RC_SQLITE_FILE') ?: (self::$STORAGE_PATH . '/riftcollect.sqlite');
@@ -42,12 +54,13 @@ final class Config
             self::$DB_USER = null;
             self::$DB_PASS = null;
         } else {
-            $host = getenv('RC_MYSQL_HOST') ?: 'localhost';
-            $dbname = getenv('RC_MYSQL_DB') ?: 'riftcollect';
+            // Defaults filled with provided OVH credentials, can be overridden by env
+            $host = getenv('RC_MYSQL_HOST') ?: 'yannickrpubase.mysql.db';
+            $dbname = getenv('RC_MYSQL_DB') ?: 'yannickrpubase';
             $charset = getenv('RC_MYSQL_CHARSET') ?: 'utf8mb4';
             self::$DB_DSN = "mysql:host={$host};dbname={$dbname};charset={$charset}";
-            self::$DB_USER = getenv('RC_MYSQL_USER') ?: 'root';
-            self::$DB_PASS = getenv('RC_MYSQL_PASS') ?: '';
+            self::$DB_USER = getenv('RC_MYSQL_USER') ?: null;
+            self::$DB_PASS = getenv('RC_MYSQL_PASS') ?: null;
         }
 
         self::$initialized = true;
@@ -66,5 +79,26 @@ final class Config
         self::$CDN_IMAGES = array_values(array_filter($list, function ($u) {
             return is_string($u) && preg_match('#^https?://#i', $u);
         }));
+
+        // LLM defaults from environment
+    // Enable LLM by default; can be disabled by setting RC_LLM_ENABLED=0 in the environment
+    self::$LLM_ENABLED   = (int)(getenv('RC_LLM_ENABLED') ?: '1');
+        self::$LLM_MODEL     = getenv('RC_LLM_MODEL') ?: 'gpt-4o-mini';
+        self::$LLM_MAX_CALLS = (int)(getenv('RC_LLM_MAX_CALLS') ?: '10000');
+    self::$LLM_BASE_URL  = getenv('RC_LLM_BASE_URL') ?: 'https://api.openai.com/v1';
+    self::$OPENAI_API_KEY = getenv('OPENAI_API_KEY') ?: null; // DO NOT hardcode secrets; set env on server
+
+        // Admin emails (comma-separated list) — default to the requested admin
+        $adminCsv = getenv('RC_ADMIN_EMAILS');
+        if ($adminCsv !== false && $adminCsv !== null && $adminCsv !== '') {
+            $admins = array_map('trim', explode(',', $adminCsv));
+        } else {
+            $admins = ['yan.ruault@gmail.com'];
+        }
+        // Normalize to lowercase unique
+        $admins = array_values(array_unique(array_map(function ($e) {
+            return strtolower((string)$e);
+        }, array_filter($admins, fn($e) => is_string($e) && $e !== ''))));
+        self::$ADMIN_EMAILS = $admins;
     }
 }

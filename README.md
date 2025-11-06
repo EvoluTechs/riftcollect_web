@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # RiftCollect
 
 RiftCollect est une application web (PHP + JS) pour la communauté francophone des collectionneurs du TCG Riftbound.
@@ -11,7 +10,7 @@ Fonctionnalités incluses:
 - Authentification email/mot de passe (sessions PHP)
 
 Technos:
-- Backend: PHP 8+, PDO (SQLite par défaut, MySQL possible), cURL
+- Backend: PHP 8+, PDO (MySQL par défaut; SQLite possible), cURL
 - Frontend: HTML5, Bootstrap 5, Vanilla JS (SPA avec hash routing)
 - Déploiement: hébergement mutualisé OVH (copie de fichiers)
 
@@ -23,9 +22,12 @@ Renommez/éditez `inc/Config.php` si besoin ou utilisez des variables d'environn
 - `RIFT_API_KEY`: Clé API si nécessaire (opcional)
 - `RC_CDN_IMAGES`: Liste d'URLs d'images publiques (séparées par des virgules) utilisées en secours sur la page d'accueil si aucun visuel n'est présent dans `assets/img/riftbound/`.
 	- Exemple: `https://cdn.rgpub.io/public/live/map/riftbound/latest/OGN/cards/OGN-310/full-desktop.jpg`
-- `RC_DB_DRIVER`: `sqlite` (défaut) ou `mysql`
+- `RC_DB_DRIVER`: `mysql` (défaut) ou `sqlite`
 - `RC_SQLITE_FILE`: Chemin du fichier SQLite (défaut: `storage/riftcollect.sqlite`)
 - `RC_MYSQL_HOST`, `RC_MYSQL_DB`, `RC_MYSQL_USER`, `RC_MYSQL_PASS`
+- `RC_DB_PREFIX`: Préfixe des tables (défaut: `riftcollect_`)
+
+Par défaut, l'app est configurée pour se connecter à une base MySQL OVH avec le préfixe `riftcollect_`. Vous pouvez surcharger ces valeurs via les variables d'environnement ci‑dessus.
 
 Le dossier `storage/` doit être inscriptible par PHP (OVH: droits 705/775 selon offre).
 
@@ -33,13 +35,23 @@ Le dossier `storage/` doit être inscriptible par PHP (OVH: droits 705/775 selon
 
 1. Uploadez tous les fichiers dans le dossier `www/` de votre hébergement.
 2. Assurez-vous que `storage/` est inscriptible (CHMOD 705/775) et reste non-accessible au web (un `.htaccess` est fourni).
-3. (Optionnel) Configurez une base MySQL OVH et renseignez les variables `RC_DB_*` si vous préférez MySQL.
-4. (Optionnel) Planifiez une tâche cron OVH pour appeler `/cron/check_updates.php` quotidiennement.
-5. (Optionnel) Tant que l'API officielle n'est pas disponible, vous pouvez peupler le cache cartes depuis le CDN public via `/cron/scan_cdn_cards.php`.
+3. Base de données MySQL: créez la base/n-usr OVH et, si besoin, configurez les variables:
+	- RC_DB_DRIVER = mysql
+	- RC_MYSQL_HOST, RC_MYSQL_DB, RC_MYSQL_USER, RC_MYSQL_PASS
+	- RC_DB_PREFIX = riftcollect_
+	Par défaut, l’app est déjà configurée pour l’accès OVH fourni et le préfixe `riftcollect_`.
+4. Les tables seront créées automatiquement au premier appel (API/cron) si absentes.
+5. Planifiez une tâche cron OVH pour appeler `/cron/check_updates.php` quotidiennement (maj des extensions).
+6. Pour peupler les cartes sans API officielle, utilisez `/cron/scan_cdn_cards.php`.
+
+### Vérification de la connexion BDD
+
+- `api.php?action=db.health` — écrit/relit/supprime un enregistrement de test dans `riftcollect_translations` et renvoie l’état de la connexion.
 
 ## Endpoints API (simples)
 
 - `api.php?action=health`
+- `api.php?action=db.health`
 - `api.php?action=register` (POST: email, password)
 - `api.php?action=login` (POST: email, password)
 - `api.php?action=logout`
@@ -71,6 +83,23 @@ Exemples:
 
 Le script fait des HEAD sur les URLs du CDN et insère dans `cards_cache` les cartes trouvées (id=`SET-###`, image_url, set_code). Les métadonnées (nom, rareté) restent vides tant que l'API officielle n'est pas branchée.
 
+## Migration de SQLite vers MySQL
+
+Si vous avez déjà des données dans `storage/riftcollect.sqlite`, vous pouvez les migrer vers MySQL:
+
+- Navigateur: `/cron/migrate_sqlite_to_mysql.php?src=storage/riftcollect.sqlite&dry=0`
+- CLI: `php cron/migrate_sqlite_to_mysql.php src=storage/riftcollect.sqlite dry=0`
+
+Options:
+- `src`: chemin du fichier SQLite (défaut `storage/riftcollect.sqlite`)
+- `dry`: 1 = simulation (aucune écriture)
+- `limit`: nombre max de lignes par table (0 = sans limite)
+- `tables`: liste de tables à migrer, ex: `users,cards_cache,collections`
+
+Notes:
+- Le script détecte les tables source avec ou sans préfixe.
+- Les tables cibles sont celles préfixées (`riftcollect_*`) et sont créées automatiquement si absentes.
+
 ## Notes
 
 - L'API Riftbound réelle n'étant pas documentée ici, les points d'accès et schémas sont des placeholders. Adaptez `Config::$API_BASE_URL` et les mappings dans `Database::syncCardsFromApi()` / `syncExpansionsFromApi()` selon la vraie API.
@@ -82,7 +111,4 @@ Le script fait des HEAD sur les URLs du CDN et insère dans `cards_cache` les ca
 
 - Placez ce dossier dans un serveur PHP local (WAMP/XAMPP) ou utilisez `php -S localhost:8000` dans le dossier (si disponible).
 
-=======
-# riftcollect_web
-RiftCollect est une application indépendante créée pour la communauté francophone des collectionneurs du TCG Riftbound.  L’objectif est de proposer un espace simple et visuel pour :  Parcourir la base officielle des cartes (via l’API Riftbound) ;  Gérer sa propre collection (cartes possédées, manquantes, doublons, etc.) 
->>>>>>> b5c8888a0faa28b74f30cd092fbf0ebc7341cdce
+ 
