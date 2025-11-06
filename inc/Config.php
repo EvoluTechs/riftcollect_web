@@ -100,5 +100,19 @@ final class Config
             return strtolower((string)$e);
         }, array_filter($admins, fn($e) => is_string($e) && $e !== ''))));
         self::$ADMIN_EMAILS = $admins;
+
+        // Optional local overrides without committing secrets:
+        // Create inc/LocalConfig.php with class \RiftCollect\LocalConfig { public static function apply(): void { Config::$OPENAI_API_KEY = '...'; /* etc. */ } }
+        $localCfg = __DIR__ . '/LocalConfig.php';
+        if (is_file($localCfg)) {
+            try {
+                require_once $localCfg;
+                    if (class_exists('RiftCollect\\LocalConfig') && method_exists('RiftCollect\\LocalConfig', 'apply')) {
+                        @call_user_func(['RiftCollect\\LocalConfig','apply']);
+                }
+            } catch (\Throwable $e) {
+                // ignore local override errors
+            }
+        }
     }
 }

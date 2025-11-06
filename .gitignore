@@ -1,0 +1,22 @@
+# Ignore local overrides and secrets
+inc/LocalConfig.php
+
+# Node, build caches (if any)
+node_modules/
+.cache/
+dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PHP
+vendor/
+composer.lock
+
+# Logs and storage
+storage/logs/*
+!storage/logs/.gitkeep
+storage/hashes/*
+!storage/hashes/.gitkeep
+storage/*.sqlite
