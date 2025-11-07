@@ -90,7 +90,9 @@ final class Database
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                share_enabled INTEGER NOT NULL DEFAULT 0,
+                share_token TEXT NULL
             )');
 
             $db->exec('CREATE TABLE IF NOT EXISTS ' . self::t('cards_cache') . ' (
@@ -103,7 +105,8 @@ final class Database
                 updated_at INTEGER NOT NULL,
                 color TEXT,
                 card_type TEXT,
-                description TEXT
+                description TEXT,
+                price REAL
             )');
             // backward-compatible column adds (SQLite only)
             try {
@@ -121,10 +124,42 @@ final class Database
                 if (!isset($cols['description'])) {
                     $db->exec('ALTER TABLE ' . self::t('cards_cache') . ' ADD COLUMN description TEXT');
                 }
+                if (!isset($cols['price'])) {
+                    $db->exec('ALTER TABLE ' . self::t('cards_cache') . ' ADD COLUMN price REAL');
+                }
             } catch (Exception $e) { /* ignore */ }
             $db->exec('CREATE INDEX IF NOT EXISTS ' . self::t('idx_cards_name') . ' ON ' . self::t('cards_cache') . '(name)');
             $db->exec('CREATE INDEX IF NOT EXISTS ' . self::t('idx_cards_set') . ' ON ' . self::t('cards_cache') . '(set_code)');
             $db->exec('CREATE INDEX IF NOT EXISTS ' . self::t('idx_cards_rarity') . ' ON ' . self::t('cards_cache') . '(rarity)');
+
+            // Articles table
+            $db->exec('CREATE TABLE IF NOT EXISTS ' . self::t('articles') . ' (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                subtitle TEXT NULL,
+                slug TEXT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                author_id INTEGER NOT NULL,
+                published INTEGER NOT NULL DEFAULT 0,
+                is_guide INTEGER NOT NULL DEFAULT 0,
+                redacteur TEXT NULL,
+                source TEXT NULL,
+                image_url TEXT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (author_id) REFERENCES ' . self::t('users') . '(id) ON DELETE CASCADE
+            )');
+            // Backward-compatible adds for new article columns
+            try {
+                $cols = [];
+                $rs = $db->query('PRAGMA table_info(' . self::t('articles') . ')');
+                if ($rs) { foreach ($rs->fetchAll() as $row) { $cols[strtolower((string)$row['name'])] = true; } }
+                if (!isset($cols['subtitle'])) { $db->exec('ALTER TABLE ' . self::t('articles') . ' ADD COLUMN subtitle TEXT NULL'); }
+                if (!isset($cols['is_guide'])) { $db->exec('ALTER TABLE ' . self::t('articles') . ' ADD COLUMN is_guide INTEGER NOT NULL DEFAULT 0'); }
+                if (!isset($cols['redacteur'])) { $db->exec('ALTER TABLE ' . self::t('articles') . ' ADD COLUMN redacteur TEXT NULL'); }
+                if (!isset($cols['source'])) { $db->exec('ALTER TABLE ' . self::t('articles') . ' ADD COLUMN source TEXT NULL'); }
+                if (!isset($cols['image_url'])) { $db->exec('ALTER TABLE ' . self::t('articles') . ' ADD COLUMN image_url TEXT NULL'); }
+            } catch (\Throwable $e) { /* ignore */ }
 
             $db->exec('CREATE TABLE IF NOT EXISTS ' . self::t('collections') . ' (
                 user_id INTEGER NOT NULL,
@@ -167,6 +202,20 @@ final class Database
                 dst_text TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
             )');
+            // Backward-compatible column adds for users (older installs before share feature)
+            try {
+                $cols = [];
+                $rs = $db->query('PRAGMA table_info(' . self::t('users') . ')');
+                if ($rs) { foreach ($rs->fetchAll() as $row) { $cols[strtolower((string)$row['name'])] = true; } }
+                if (!isset($cols['share_enabled'])) {
+                    $db->exec('ALTER TABLE ' . self::t('users') . ' ADD COLUMN share_enabled INTEGER NOT NULL DEFAULT 0');
+                }
+                if (!isset($cols['share_token'])) {
+                    $db->exec('ALTER TABLE ' . self::t('users') . ' ADD COLUMN share_token TEXT NULL');
+                }
+                // Unique index for share_token (allow quick lookup)
+                $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS ' . self::t('idx_users_share_token') . ' ON ' . self::t('users') . ' (share_token)');
+            } catch (\Throwable $e) { /* ignore */ }
         } else {
             // MySQL schema (InnoDB, utf8mb4)
             $db->exec('CREATE TABLE IF NOT EXISTS `' . self::t('users') . '` (
@@ -174,6 +223,8 @@ final class Database
                 `email` VARCHAR(255) NOT NULL UNIQUE,
                 `password_hash` VARCHAR(255) NOT NULL,
                 `created_at` INT UNSIGNED NOT NULL,
+                `share_enabled` TINYINT(1) NOT NULL DEFAULT 0,
+                `share_token` VARCHAR(64) NULL UNIQUE,
                 PRIMARY KEY (`id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
@@ -188,6 +239,7 @@ final class Database
                 `color` VARCHAR(32) NULL,
                 `card_type` VARCHAR(64) NULL,
                 `description` TEXT NULL,
+                `price` DECIMAL(10,2) NULL,
                 PRIMARY KEY (`id`),
                 KEY `' . self::t('idx_cards_name') . '` (`name`),
                 KEY `' . self::t('idx_cards_set') . '` (`set_code`),
@@ -239,6 +291,61 @@ final class Database
                 `updated_at` INT UNSIGNED NOT NULL,
                 PRIMARY KEY (`id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+            // Articles table
+            $db->exec('CREATE TABLE IF NOT EXISTS `' . self::t('articles') . '` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `title` VARCHAR(255) NOT NULL,
+                `subtitle` VARCHAR(512) NULL,
+                `slug` VARCHAR(255) NOT NULL UNIQUE,
+                `content` LONGTEXT NOT NULL,
+                `author_id` INT UNSIGNED NOT NULL,
+                `published` TINYINT(1) NOT NULL DEFAULT 0,
+                `is_guide` TINYINT(1) NOT NULL DEFAULT 0,
+                `redacteur` VARCHAR(255) NULL,
+                `source` VARCHAR(1024) NULL,
+                `image_url` TEXT NULL,
+                `created_at` INT UNSIGNED NOT NULL,
+                `updated_at` INT UNSIGNED NOT NULL,
+                PRIMARY KEY (`id`),
+                KEY `' . self::t('idx_articles_published') . '` (`published`),
+                CONSTRAINT `fk_' . self::t('articles') . '_author` FOREIGN KEY (`author_id`) REFERENCES `' . self::t('users') . '`(`id`) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+            // Backward-compatible add columns if table existed before share feature
+            try {
+                $cols = [];
+                $rs = $db->query('SHOW COLUMNS FROM `' . self::t('users') . '`');
+                if ($rs) { foreach ($rs->fetchAll() as $row) { $cols[strtolower((string)$row['Field'])] = true; } }
+                $alters = [];
+                if (!isset($cols['share_enabled'])) $alters[] = 'ADD COLUMN `share_enabled` TINYINT(1) NOT NULL DEFAULT 0';
+                if (!isset($cols['share_token'])) $alters[] = 'ADD COLUMN `share_token` VARCHAR(64) NULL UNIQUE';
+                if ($alters) {
+                    $db->exec('ALTER TABLE `' . self::t('users') . '` ' . implode(', ', $alters));
+                }
+            } catch (\Throwable $e) { /* ignore */ }
+
+            // Backward-compatible add price column to cards_cache
+            try {
+                $cols = [];
+                $rs = $db->query('SHOW COLUMNS FROM `' . self::t('cards_cache') . '`');
+                if ($rs) { foreach ($rs->fetchAll() as $row) { $cols[strtolower((string)$row['Field'])] = true; } }
+                if (!isset($cols['price'])) {
+                    $db->exec('ALTER TABLE `' . self::t('cards_cache') . '` ADD COLUMN `price` DECIMAL(10,2) NULL');
+                }
+            } catch (\Throwable $e) { /* ignore */ }
+            // Backward-compatible add new article columns
+            try {
+                $cols = [];
+                $rs = $db->query('SHOW COLUMNS FROM `' . self::t('articles') . '`');
+                if ($rs) { foreach ($rs->fetchAll() as $row) { $cols[strtolower((string)$row['Field'])] = true; } }
+                $alters = [];
+                if (!isset($cols['subtitle'])) $alters[] = 'ADD COLUMN `subtitle` VARCHAR(512) NULL';
+                if (!isset($cols['is_guide'])) $alters[] = 'ADD COLUMN `is_guide` TINYINT(1) NOT NULL DEFAULT 0';
+                if (!isset($cols['redacteur'])) $alters[] = 'ADD COLUMN `redacteur` VARCHAR(255) NULL';
+                if (!isset($cols['source'])) $alters[] = 'ADD COLUMN `source` VARCHAR(1024) NULL';
+                if (!isset($cols['image_url'])) $alters[] = 'ADD COLUMN `image_url` TEXT NULL';
+                if ($alters) { $db->exec('ALTER TABLE `' . self::t('articles') . '` ' . implode(', ', $alters)); }
+            } catch (\Throwable $e) { /* ignore */ }
         }
     }
 
@@ -359,6 +466,171 @@ final class Database
             $count++;
         }
         return $count;
+    }
+
+    // -------- Admin: Cards update --------
+
+    /**
+     * Update a subset of metadata for a card. Allowed keys: name, rarity, price, color, card_type, description, image_url, set_code
+     */
+    public static function updateCardMeta(string $id, array $changes): bool
+    {
+        $id = trim($id);
+        if ($id === '') return false;
+        if (!$changes) return true;
+        $allowed = [
+            'name' => true,
+            'rarity' => true,
+            'price' => true,
+            'color' => true,
+            'card_type' => true,
+            'description' => true,
+            'image_url' => true,
+            'set_code' => true,
+        ];
+        $sets = [];
+        $params = [];
+        foreach ($changes as $k => $v) {
+            if (!isset($allowed[$k])) continue;
+            $sets[] = "$k = :$k";
+            if ($k === 'price') {
+                $params[":$k"] = ($v === null || $v === '') ? null : (float)$v;
+            } else {
+                $params[":$k"] = $v;
+            }
+        }
+        if (!$sets) return false;
+        $params[':id'] = $id;
+        $db = self::pdo();
+        $sql = 'UPDATE ' . self::t('cards_cache') . ' SET ' . implode(', ', $sets) . ', updated_at = :updated WHERE id = :id';
+        $params[':updated'] = time();
+        $st = $db->prepare($sql);
+        return $st->execute($params) === true;
+    }
+
+    // -------- Articles --------
+
+    private static function slugify(string $title): string
+    {
+        $s = strtolower(trim($title));
+        $s = strtr($s, [
+            'à' => 'a','â' => 'a','ä' => 'a',
+            'é' => 'e','è' => 'e','ê' => 'e','ë' => 'e',
+            'î' => 'i','ï' => 'i',
+            'ô' => 'o','ö' => 'o',
+            'ù' => 'u','û' => 'u','ü' => 'u',
+            'ç' => 'c',
+        ]);
+        $s = preg_replace('/[^a-z0-9]+/i', '-', $s) ?: '';
+        $s = trim($s, '-');
+        if ($s === '') $s = 'article-' . dechex(random_int(0, 0xffff));
+        return $s;
+    }
+
+    private static function ensureArticlesTable(PDO $db): void
+    {
+        // no-op here: created in migrate(); this is a safe helper if older DBs exist
+    }
+
+    public static function createArticle(string $title, string $content, int $authorId, bool $published, ?string $redacteur = null, ?string $source = null, ?string $imageUrl = null, ?string $subtitle = null, ?int $createdAt = null, bool $isGuide = false): array
+    {
+        $db = self::pdo();
+        $now = time();
+        $slug = self::slugify($title);
+        // Ensure slug uniqueness by suffixing with -2, -3 if needed
+        $base = $slug; $i = 2;
+        while (true) {
+            $st = $db->prepare('SELECT 1 FROM ' . self::t('articles') . ' WHERE slug = ? LIMIT 1');
+            try { $st->execute([$slug]); $row = $st->fetch(); } catch (\Throwable $e) { $row = false; }
+            if (!$row) break;
+            $slug = $base . '-' . $i++;
+            if ($i > 99) { $slug = $base . '-' . bin2hex(random_bytes(2)); break; }
+        }
+    $sql = 'INSERT INTO ' . self::t('articles') . ' (title, subtitle, slug, content, author_id, published, is_guide, redacteur, source, image_url, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)';
+    $st2 = $db->prepare($sql);
+    $created = $createdAt && $createdAt > 0 ? (int)$createdAt : $now;
+    $st2->execute([$title, $subtitle, $slug, $content, $authorId, $published ? 1 : 0, $isGuide ? 1 : 0, $redacteur, $source, $imageUrl, $created, $now]);
+        $id = (int)$db->lastInsertId();
+        return ['id' => $id, 'slug' => $slug];
+    }
+
+    public static function updateArticle(int $id, array $fields): bool
+    {
+        $db = self::pdo();
+    $allowed = ['title','subtitle','content','published','is_guide','redacteur','source','image_url','created_at'];
+        $sets = [];
+        $params = [];
+        foreach ($fields as $k => $v) {
+            if (!in_array($k, $allowed, true)) continue;
+            $sets[] = "$k = :$k";
+            if ($k === 'published') $v = $v ? 1 : 0;
+            if ($k === 'created_at') $v = (int)$v;
+            $params[":$k"] = $v;
+        }
+        if (!$sets) return false;
+        $params[':id'] = $id;
+        $params[':updated'] = time();
+        $sql = 'UPDATE ' . self::t('articles') . ' SET ' . implode(', ', $sets) . ', updated_at = :updated WHERE id = :id';
+        $st = $db->prepare($sql);
+        return $st->execute($params) === true;
+    }
+
+    public static function deleteArticle(int $id): bool
+    {
+        $db = self::pdo();
+        $st = $db->prepare('DELETE FROM ' . self::t('articles') . ' WHERE id = ?');
+        return $st->execute([$id]) === true;
+    }
+
+    public static function getArticle(int $id, bool $includeDrafts = false): ?array
+    {
+        $db = self::pdo();
+        if ($includeDrafts) {
+            $st = $db->prepare('SELECT * FROM ' . self::t('articles') . ' WHERE id = ?');
+            $st->execute([$id]);
+        } else {
+            $st = $db->prepare('SELECT * FROM ' . self::t('articles') . ' WHERE id = ? AND published = 1');
+            $st->execute([$id]);
+        }
+        $row = $st->fetch();
+        return $row ?: null;
+    }
+
+    public static function listArticles(int $page = 1, int $pageSize = 20, bool $includeDrafts = false): array
+    {
+        $db = self::pdo();
+        $page = max(1, $page); $pageSize = max(1, min(100, $pageSize));
+        $offset = ($page - 1) * $pageSize;
+        $guideOnly = false; // default; may be overridden by API caller via 4th param (back-compat signature extended below)
+        if (func_num_args() >= 4) { $args = func_get_args(); $guideOnly = (bool)$args[3]; }
+        if ($includeDrafts) {
+            if ($guideOnly) {
+                $cnt = $db->query('SELECT COUNT(*) AS n FROM ' . self::t('articles') . ' WHERE is_guide = 1')->fetch();
+                $total = (int)($cnt['n'] ?? 0);
+                $sql = 'SELECT * FROM ' . self::t('articles') . ' WHERE is_guide = 1 ORDER BY created_at DESC LIMIT :lim OFFSET :off';
+            } else {
+                $cnt = $db->query('SELECT COUNT(*) AS n FROM ' . self::t('articles'))->fetch();
+                $total = (int)($cnt['n'] ?? 0);
+                $sql = 'SELECT * FROM ' . self::t('articles') . ' ORDER BY created_at DESC LIMIT :lim OFFSET :off';
+            }
+            $st = $db->prepare($sql);
+        } else {
+            if ($guideOnly) {
+                $stCnt = $db->prepare('SELECT COUNT(*) AS n FROM ' . self::t('articles') . ' WHERE published = 1 AND is_guide = 1');
+                $stCnt->execute(); $rowCnt = $stCnt->fetch(); $total = (int)($rowCnt['n'] ?? 0);
+                $sql = 'SELECT * FROM ' . self::t('articles') . ' WHERE published = 1 AND is_guide = 1 ORDER BY created_at DESC LIMIT :lim OFFSET :off';
+            } else {
+                $stCnt = $db->prepare('SELECT COUNT(*) AS n FROM ' . self::t('articles') . ' WHERE published = 1');
+                $stCnt->execute(); $rowCnt = $stCnt->fetch(); $total = (int)($rowCnt['n'] ?? 0);
+                $sql = 'SELECT * FROM ' . self::t('articles') . ' WHERE published = 1 ORDER BY created_at DESC LIMIT :lim OFFSET :off';
+            }
+            $st = $db->prepare($sql);
+        }
+        $st->bindValue(':lim', $pageSize, PDO::PARAM_INT);
+        $st->bindValue(':off', $offset, PDO::PARAM_INT);
+        $st->execute();
+        $items = $st->fetchAll() ?: [];
+        return ['items' => $items, 'total' => $total, 'page' => $page, 'pageSize' => $pageSize];
     }
 
     public static function cardsList(string $q, string $rarity, string $set, int $page, int $pageSize, string $color = '', string $cardType = ''): array
@@ -493,7 +765,7 @@ final class Database
         $numExpr = (Config::$DB_DRIVER === 'mysql')
             ? "CAST(SUBSTRING(id, INSTR(id, '-')+1) AS UNSIGNED)"
             : "CAST(substr(id, instr(id, '-')+1) AS INTEGER)";
-        $stmt = $db->prepare('SELECT id,name,rarity,set_code,image_url,color,card_type,data_json FROM ' . self::t('cards_cache') . ' ' . $whereSql . ' ORDER BY set_code ASC, ' . $numExpr . ' ASC, id ASC LIMIT :limit OFFSET :offset');
+    $stmt = $db->prepare('SELECT id,name,rarity,set_code,image_url,color,card_type,description,price,data_json FROM ' . self::t('cards_cache') . ' ' . $whereSql . ' ORDER BY set_code ASC, ' . $numExpr . ' ASC, id ASC LIMIT :limit OFFSET :offset');
         foreach ($params as $k => $v) $stmt->bindValue($k, $v);
         $stmt->bindValue(':limit', $pageSize, PDO::PARAM_INT);
         $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
@@ -770,5 +1042,50 @@ final class Database
         $db = self::pdo();
         $stmt = $db->prepare('REPLACE INTO ' . self::t('subscriptions') . ' (user_id, enabled) VALUES (?,?)');
         $stmt->execute([$userId, $enabled ? 1 : 0]);
+    }
+
+    // -------- Share collection (public read-only) --------
+
+    public static function userShareInfo(int $userId): array
+    {
+        $db = self::pdo();
+        $stmt = $db->prepare('SELECT share_enabled, share_token FROM ' . self::t('users') . ' WHERE id = ? LIMIT 1');
+        $stmt->execute([$userId]);
+        $row = $stmt->fetch() ?: [];
+        $enabled = (int)($row['share_enabled'] ?? 0) === 1;
+        $token = $enabled ? (string)($row['share_token'] ?? '') : '';
+        if ($token === '') $enabled = false; // safety: no token means disabled
+        return [ 'enabled' => $enabled, 'token' => $enabled ? $token : null ];
+    }
+
+    public static function userShareSet(int $userId, int $enabled): array
+    {
+        $db = self::pdo();
+        $enabledFlag = $enabled ? 1 : 0;
+        $token = null;
+        if ($enabledFlag === 1) {
+            // Ensure existing token or generate new
+            $stmt = $db->prepare('SELECT share_token FROM ' . self::t('users') . ' WHERE id = ? LIMIT 1');
+            $stmt->execute([$userId]);
+            $cur = $stmt->fetch();
+            $token = isset($cur['share_token']) && (string)$cur['share_token'] !== '' ? (string)$cur['share_token'] : null;
+            if ($token === null) {
+                $token = bin2hex(random_bytes(12));
+            }
+        }
+        $stmt2 = $db->prepare('UPDATE ' . self::t('users') . ' SET share_enabled = ?, share_token = ? WHERE id = ?');
+        $stmt2->execute([$enabledFlag, $token, $userId]);
+        return [ 'enabled' => $enabledFlag === 1, 'token' => $enabledFlag === 1 ? $token : null ];
+    }
+
+    public static function userIdByShareToken(string $token): ?int
+    {
+        $t = trim($token);
+        if ($t === '') return null;
+        $db = self::pdo();
+        $stmt = $db->prepare('SELECT id FROM ' . self::t('users') . ' WHERE share_enabled = 1 AND share_token = ? LIMIT 1');
+        $stmt->execute([$t]);
+        $row = $stmt->fetch();
+        return $row && isset($row['id']) ? (int)$row['id'] : null;
     }
 }

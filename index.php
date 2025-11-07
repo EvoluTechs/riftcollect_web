@@ -59,9 +59,10 @@ if (isset($_SERVER['REQUEST_URI']) && preg_match('#/riot\.txt$#', $_SERVER['REQU
             <li class="nav-item"><a class="nav-link" href="#/actus">Actus</a></li>
             <li class="nav-item dropdown">
               <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">Guide</a>
-              <ul class="dropdown-menu">
+              <ul class="dropdown-menu" id="guideDropdownMenu">
                 <li><a class="dropdown-item" href="#/guide">Tous les guides</a></li>
-                <li><a class="dropdown-item" href="#/guide/drop">Taux de drop (Origins)</a></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><span class="dropdown-item-text text-muted" id="guideDropdownLoading">Chargement…</span></li>
               </ul>
             </li>
           </ul>

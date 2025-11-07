@@ -39,4 +39,10 @@ export const api = {
   expansionsList: () => request({ action: 'expansions.list' }),
   subscribe: (enabled) => request({ action: 'subscribe' }, (() => { const fd = new FormData(); fd.append('enabled', enabled ? '1' : '0'); return fd; })()),
   rarityIcons: () => request({ action: 'rarity.icons' }),
+  shareInfo: () => request({ action: 'share.info' }),
+  shareSet: (enabled) => request({ action: 'share.set' }, (() => { const fd = new FormData(); fd.append('enabled', enabled ? '1':'0'); return fd; })()),
+  collectionPublic: (token) => request({ action: 'collection.public', token }),
+  // Articles
+  articlesList: (opts = {}) => request({ action: 'articles.list', ...(opts || {}) }),
+  articleDetail: (id) => request({ action: 'articles.detail', id }),
 };

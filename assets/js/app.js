@@ -57,16 +57,120 @@ function el(tag, attrs = {}, ...children) {
       e.addEventListener(k.substring(2).toLowerCase(), v);
     } else if (typeof v === 'boolean') {
       if (v) e.setAttribute(k, '');
-      // if boolean false, skip adding the attribute entirely
     } else {
       e.setAttribute(k, v);
     }
   });
   children.forEach(c => {
     if (c == null) return;
-    if (typeof c === 'string') e.appendChild(document.createTextNode(c)); else e.appendChild(c);
+    if (typeof c === 'string') {
+      e.appendChild(document.createTextNode(c));
+    } else {
+      e.appendChild(c);
+    }
   });
   return e;
+}
+
+// Lightweight starfield for hero banner
+function initHeroStars(canvas) {
+  if (!canvas) return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return; // respect user preference
+  const ctx = canvas.getContext('2d');
+  let w = canvas.clientWidth || canvas.width;
+  let h = canvas.clientHeight || canvas.height;
+  const DPR = window.devicePixelRatio || 1;
+  function resize() {
+    w = canvas.clientWidth || canvas.parentElement.clientWidth || 1280;
+    h = canvas.clientHeight || canvas.parentElement.clientHeight || 560;
+    canvas.width = w * DPR; canvas.height = h * DPR;
+    ctx.scale(DPR, DPR);
+  }
+  resize();
+  const STAR_COUNT = Math.min(180, Math.floor((w * h) / 9000));
+  const stars = Array.from({ length: STAR_COUNT }).map(() => ({
+    x: Math.random() * w,
+    y: Math.random() * h,
+    r: Math.random() * 1.8 + 0.4,
+    vx: (Math.random() - 0.5) * 0.08,
+    vy: (Math.random() - 0.5) * 0.08,
+    twinkle: Math.random() * Math.PI * 2
+  }));
+  function step() {
+    ctx.clearRect(0, 0, w, h);
+    for (const s of stars) {
+      s.x += s.vx; s.y += s.vy; s.twinkle += 0.018;
+      if (s.x < 0) s.x += w; if (s.x > w) s.x -= w;
+      if (s.y < 0) s.y += h; if (s.y > h) s.y -= h;
+      const alpha = 0.35 + Math.sin(s.twinkle) * 0.35;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
+      ctx.fill();
+      // occasional colored sparkle
+      if (alpha > 0.6 && s.r > 1.6) {
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r * 0.6, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(212,175,55,0.55)';
+        ctx.fill();
+      }
+    }
+    requestAnimationFrame(step);
+  }
+  window.addEventListener('resize', () => { resize(); });
+  requestAnimationFrame(step);
+}
+
+// Random card slider logic
+async function initHeroCardSlider(viewport) {
+  if (!viewport) return;
+  // Fetch a batch of cards (fallback to placeholder if API fails)
+  let cards = [];
+  try {
+    // Pull first page with broad parameters to get variety
+    const resp = await api.cardsList('', '', '', 1, 24, '', '');
+    cards = (resp && resp.items) ? resp.items.slice(0, 12) : [];
+  } catch (e) { console.warn('cardsList fail', e); }
+  if (!cards.length) {
+    // Fabricate placeholders
+    cards = Array.from({ length: 5 }).map((_, i) => ({ id: 'OGN-' + (300 + i), image_url: 'assets/img/card-placeholder.svg' }));
+  }
+  // Shuffle for randomness
+  for (let i = cards.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [cards[i], cards[j]] = [cards[j], cards[i]]; }
+  cards = cards.slice(0, Math.min(6, cards.length));
+
+  // Build slides
+  const slides = cards.map((c, idx) => {
+    const slide = document.createElement('div');
+    slide.className = 'slide' + (idx === 0 ? ' active' : '');
+    const img = document.createElement('img');
+    img.loading = 'lazy'; img.decoding = 'async';
+    img.src = c.image_url || 'assets/img/card-placeholder.svg';
+    img.alt = c.name || c.id || 'Carte';
+    const idBadge = document.createElement('div'); idBadge.className = 'card-id'; idBadge.textContent = c.id || '?';
+    slide.appendChild(img); slide.appendChild(idBadge);
+    // Click opens card modal
+    slide.style.cursor = 'pointer';
+    slide.addEventListener('click', () => { if (c.id) openCardModal(c.id); });
+    viewport.appendChild(slide);
+    return slide;
+  });
+
+  let cur = 0; let timer = null;
+  function activate(n) {
+    slides[cur].classList.remove('active');
+    cur = n;
+    slides[cur].classList.add('active');
+  }
+  function next() { activate((cur + 1) % slides.length); }
+  function start() { stop(); timer = setInterval(next, 4500); }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+  // Pause on hover (desktop)
+  viewport.addEventListener('mouseenter', () => stop());
+  viewport.addEventListener('mouseleave', () => start());
+  // Visibility API (pause when tab hidden)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); else start(); });
+  start();
 }
 
 // Global: Admin CDN scan modal (accessible from multiple routes)
@@ -1035,61 +1139,113 @@ async function openCardModal(cardOrId) {
 // Views
 router.register('#/', async (root) => {
   root.innerHTML = '';
-  // Hero section with carousel if images available
-  const hero = el('section', { class: 'hero position-relative overflow-hidden rounded-3 mb-4' });
-  const heroInner = el('div', { class: 'hero-inner container position-relative py-5' },
-    el('div', { class: 'row align-items-center' },
-      el('div', { class: 'col-lg-7' },
-          // Title intentionally removed per request
-        el('p', { class: 'lead mb-4' }, "Parcourez les cartes Riftbound, gérez votre collection et suivez les nouvelles extensions. Projet fan, non affilié."),
-        el('div', { class: 'd-flex gap-2' },
-          el('a', { class: 'btn btn-primary btn-lg', href: '#/cartes' }, 'Parcourir les cartes'),
-          el('a', { class: 'btn btn-outline-secondary btn-lg', href: '#/collection' }, 'Ma collection')
+  // Enhanced hero banner (lux version)
+  const hero = el('section', { class: 'hero hero-lux rounded-3 mb-4 position-relative' });
+  // Starfield canvas (will be animated if motion allowed)
+  const starsCanvas = el('canvas', { class: 'hero-stars', width: 1280, height: 560 });
+  hero.append(starsCanvas);
+  const heroInner = el('div', { class: 'hero-inner container position-relative' },
+    el('div', { class: 'row align-items-center justify-content-between' },
+      el('div', { class: 'col-lg-7 mb-4 mb-lg-0' },
+  el('div', { class: 'hero-tagline mb-4' }, "Parcourez les cartes Riftbound, gérez votre collection et suivez les nouvelles extensions."),
+        el('div', { class: 'hero-actions d-flex flex-wrap gap-3' },
+          el('a', { class: 'btn btn-primary btn-lg px-4', href: '#/cartes' }, 'Parcourir les cartes'),
+          el('a', { class: 'btn btn-outline-secondary btn-lg px-4', href: '#/collection' }, 'Ma collection')
+        )
+      ),
+      el('div', { class: 'col-lg-5 hero-card-slider mb-4 mb-lg-0' },
+        el('div', { class: 'slider-viewport', id: 'heroCardSlider' },
+          // Slides injected dynamically
         )
       )
     )
   );
   hero.append(heroInner);
-
   root.append(hero);
+  // Decorative divider
+  root.append(el('div', { class: 'hero-divider mb-4 rounded-pill' }));
+  // Init starfield animation
+  try { initHeroStars(starsCanvas); } catch {}
+  // Init random card slider
+  try { initHeroCardSlider(document.getElementById('heroCardSlider')); } catch(e){ console.warn('hero slider init failed', e); }
 
   // Features
   const features = el('section', { class: 'py-4' },
     el('div', { class: 'container' },
       el('div', { class: 'row g-3' },
-        el('div', { class: 'col-md-3' }, el('div', { class: 'feature card h-100 p-3' }, el('div', { class: 'h5' }, 'Cartothèque'), el('p', { class: 'mb-0 text-muted' }, 'Base officielle via API, recherche et filtres.'))),
-        el('div', { class: 'col-md-3' }, el('div', { class: 'feature card h-100 p-3' }, el('div', { class: 'h5' }, 'Ma collection'), el('p', { class: 'mb-0 text-muted' }, 'Suivez vos cartes possédées et manquantes.'))),
-        el('div', { class: 'col-md-3' }, el('div', { class: 'feature card h-100 p-3' }, el('div', { class: 'h5' }, 'Statistiques'), el('p', { class: 'mb-0 text-muted' }, 'Progression globale, raretés et sets.'))),
-        el('div', { class: 'col-md-3' }, el('div', { class: 'feature card h-100 p-3' }, el('div', { class: 'h5' }, 'Actus'), el('p', { class: 'mb-0 text-muted' }, 'Soyez informé des extensions et événements.')))
+        el('div', { class: 'col-md-3' },
+          el('div', { class: 'feature card h-100 p-3 position-relative clickable' },
+            el('div', { class: 'h5' }, 'Cartothèque'),
+            el('p', { class: 'mb-0 text-muted' }, 'Base officielle via API, recherche et filtres.'),
+            el('a', { href: '#/cartes', class: 'stretched-link', 'aria-label': 'Aller à Cartothèque' })
+          )
+        ),
+        el('div', { class: 'col-md-3' },
+          el('div', { class: 'feature card h-100 p-3 position-relative clickable' },
+            el('div', { class: 'h5' }, 'Ma collection'),
+            el('p', { class: 'mb-0 text-muted' }, 'Suivez vos cartes possédées et manquantes.'),
+            el('a', { href: '#/collection', class: 'stretched-link', 'aria-label': 'Aller à Ma collection' })
+          )
+        ),
+        el('div', { class: 'col-md-3' },
+          el('div', { class: 'feature card h-100 p-3 position-relative clickable' },
+            el('div', { class: 'h5' }, 'Statistiques'),
+            el('p', { class: 'mb-0 text-muted' }, 'Progression globale, raretés et sets.'),
+            el('a', { href: '#/stats', class: 'stretched-link', 'aria-label': 'Aller à Statistiques' })
+          )
+        ),
+        el('div', { class: 'col-md-3' },
+          el('div', { class: 'feature card h-100 p-3 position-relative clickable' },
+            el('div', { class: 'h5' }, 'Actus'),
+            el('p', { class: 'mb-0 text-muted' }, 'Soyez informé des extensions et événements.'),
+            el('a', { href: '#/actus', class: 'stretched-link', 'aria-label': 'Aller à Actus' })
+          )
+        )
       )
     )
   );
   root.append(features);
 
-  // Latest expansions preview
-  const expSec = el('section', { class: 'py-2' }, el('div', { class: 'container' }, el('h3', { class: 'mb-3' }, 'Dernières extensions'), el('div', { class: 'row g-3', id: 'exp-list' })));
-  root.append(expSec);
+  // Actualités (aperçu page d'accueil)
+  const newsSec = el('section', { class: 'py-2' },
+    el('div', { class: 'container' },
+      el('div', { class: 'd-flex align-items-center justify-content-between mb-3' },
+        el('h3', { class: 'mb-0' }, 'Actualités'),
+        el('a', { href: '#/actus', class: 'btn btn-sm btn-outline-secondary' }, 'Toutes les actus')
+      ),
+      el('div', { class: 'row g-3', id: 'home-news-list' }),
+      el('div', { id: 'home-news-status', class: 'small text-muted mt-2' }, 'Chargement...')
+    )
+  );
+  root.append(newsSec);
 
-  // Load expansions
+  // Charger les 8 dernières actualités publiées
   try {
-    const data = await api.expansionsList();
-    const list = expSec.querySelector('#exp-list');
+    const data = await api.articlesList({ page: 1, pageSize: 8 });
+    const items = (data.items || []);
+    const list = newsSec.querySelector('#home-news-list');
+    const status = newsSec.querySelector('#home-news-status');
     list.innerHTML = '';
-    (data.expansions || []).slice(0, 3).forEach(e => {
-      const date = e.released_at ? new Date(e.released_at * 1000).toLocaleDateString('fr-FR') : '—';
+    status.textContent = items.length ? '' : 'Aucune actualité.';
+    items.forEach(a => {
+      const created = a.created_at ? new Date(a.created_at * 1000).toLocaleDateString('fr-FR') : '';
       list.append(
-        el('div', { class: 'col-md-4' },
-          el('div', { class: 'card h-100' },
+        el('div', { class: 'col-sm-6 col-lg-3' },
+          el('div', { class: 'card h-100 article-card', 'data-id': a.id },
+            a.image_url ? el('img', { src: a.image_url, alt: a.title || 'visuel', class: 'card-img-top', style: 'object-fit:cover;max-height:140px;' }) : null,
             el('div', { class: 'card-body d-flex flex-column' },
-              el('div', { class: 'h5' }, e.name),
-              el('div', { class: 'text-muted mb-3' }, e.code + ' · ' + date),
-              el('div', { class: 'mt-auto' }, el('a', { class: 'btn btn-sm btn-outline-secondary', href: '#/actus' }, 'Voir toutes les actus'))
+              el('div', { class: 'h6 mb-1' }, a.title || ''),
+              el('div', { class: 'small text-muted mb-2' }, (a.redacteur ? ('Par ' + a.redacteur + ' • ') : '') + (created || '')),
+              el('div', { class: 'mt-auto' }, el('a', { href: '#/article/' + a.id, class: 'btn btn-sm btn-outline-secondary stretched-link' }, 'Lire'))
             )
           )
         )
       );
     });
-  } catch {}
+  } catch (e) {
+    const status = document.getElementById('home-news-status');
+    if (status) status.textContent = 'Erreur lors du chargement des actualités.';
+  }
 
   // No carousel and no image overlay: hero background is defined in CSS only
 });
@@ -1161,11 +1317,13 @@ router.register('#/cartes', async (root) => {
     load();
   });
   const results = el('div', { class: 'row g-3 mt-3' });
-  const actions = el('div', { class: 'd-flex justify-content-between align-items-center mt-3' });
-  // Rarity icons helper (dynamic from backend)
   function rarityLabelFromKey(k) {
     const m = {
-      common: 'Commune', uncommon: 'Peu commune', rare: 'Rare', epic: 'Épique', legendary: 'Légendaire'
+      common: 'Commune',
+      uncommon: 'Peu commune',
+      rare: 'Rare',
+      epic: 'Épique',
+      legendary: 'Légendaire'
     };
     return m[(k||'').toLowerCase()] || (k ? (k.charAt(0).toUpperCase()+k.slice(1)) : 'Toutes raretés');
   }
@@ -1195,6 +1353,24 @@ router.register('#/cartes', async (root) => {
   // Modal moved to global scope: openCdnScanModal()
   const pager = el('div', { class: 'd-flex align-items-center gap-2' });
   let page = 1;
+  // View toggle (grid/list)
+  const viewModeKey = 'cards.viewMode';
+  let viewMode = (localStorage.getItem(viewModeKey) === 'list') ? 'list' : 'grid';
+  function makeViewToggle() {
+    const wrap = el('div', { class: 'btn-group btn-group-sm', role: 'group', 'aria-label': 'Affichage' });
+    const btnGrid = el('button', { class: 'btn btn-outline-secondary', title: 'Grille', onclick: () => { viewMode = 'grid'; localStorage.setItem(viewModeKey, 'grid'); refreshViewToggle(); load(); } }, (function(){ const s=document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 16 16'); s.style.width='1em'; s.style.height='1em'; s.innerHTML='<path fill="currentColor" d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5zm-8 8A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5zm8 0A1.5 1.5 0 0 1 10.5 9h3A1.5 1.5 0 0 1 15 10.5v3A1.5 1.5 0 0 1 13.5 15h-3A1.5 1.5 0 0 1 9 13.5z"/>'; return s; })());
+    const btnList = el('button', { class: 'btn btn-outline-secondary', title: 'Liste', onclick: () => { viewMode = 'list'; localStorage.setItem(viewModeKey, 'list'); refreshViewToggle(); load(); } }, (function(){ const s=document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 16 16'); s.style.width='1em'; s.style.height='1em'; s.innerHTML='<path fill="currentColor" d="M2 4a1 1 0 0 1 1-1h10a1 1 0 1 1 0 2H3a1 1 0 0 1-1-1m0 4a1 1 0 0 1 1-1h10a1 1 0 1 1 0 2H3a1 1 0 0 1-1-1m1 3a1 1 0 1 0 0 2h10a1 1 0 1 0 0-2z"/>'; return s; })());
+    function refreshViewToggle() {
+      btnGrid.classList.toggle('btn-secondary', viewMode==='grid');
+      btnGrid.classList.toggle('btn-outline-secondary', viewMode!=='grid');
+      btnList.classList.toggle('btn-secondary', viewMode==='list');
+      btnList.classList.toggle('btn-outline-secondary', viewMode!=='list');
+    }
+    wrap.append(btnGrid, btnList);
+    return { root: wrap, refresh: refreshViewToggle };
+  }
+  const viewToggle = makeViewToggle();
+  viewToggle.refresh();
   // Custom dropdowns for Color and Type with icons
   const colors = [
     { key: '', label: 'Toutes couleurs' },
@@ -1281,38 +1457,75 @@ router.register('#/cartes', async (root) => {
   const data = await api.cardsList(q.value.trim(), selectedRarity, set.value.trim(), page, ps, selectedColor, selectedType);
       if (seq !== loadSeq) return; // stale response, ignore
       results.innerHTML = '';
-      data.items.forEach(card => {
-        const qty = qtyMap[card.id] || 0;
-        const imgEl = el('img', { src: card.image_url || 'assets/img/card-placeholder.svg', alt: card.name, loading: 'lazy', decoding: 'async' });
-        const imgWrap = el('div', { class: 'card-img-wrapper', onclick: (ev) => { ev.stopPropagation(); openCardModal(card); } }, imgEl);
-        // Icons row ABOVE the image
-        const topRow = el('div', { class: 'top-icon-row' });
-        const oci = colorIcon(card.color, 'sm');
-        if (oci) topRow.appendChild(el('div', { class: 'icon-pill' }, oci));
-        const oti = typeIcon(card.card_type, 'sm');
-        if (oti) topRow.appendChild(el('div', { class: 'icon-pill' }, oti));
-        // Footer left: ID only (icons moved to top row)
-        const idBadge = el('div', { class: 'card-id-badge' }, '#' + (card.id || '').toUpperCase());
-        let qtyInput;
-        const qtyCtrl = isLogged ? el('div', { class: 'qty-ctrl' },
-          el('button', { class: 'btn btn-sm btn-outline-secondary', onclick: async (ev) => { ev.stopPropagation(); const n = Math.max(0, (qtyMap[card.id]||0) - 1); await api.collectionSet(card.id, n); qtyMap[card.id] = n; qtyInput.value = n; if (n>0) owned.add(card.id); else owned.delete(card.id); } }, '−'),
-          (qtyInput = el('input', { type: 'number', min: '0', value: String(qty), onchange: async (ev) => { ev.stopPropagation(); let n = parseInt(qtyInput.value||'0',10); if (isNaN(n)||n<0) n=0; await api.collectionSet(card.id, n); qtyMap[card.id] = n; if (n>0) owned.add(card.id); else owned.delete(card.id); } })),
-          el('button', { class: 'btn btn-sm btn-outline-secondary', onclick: async (ev) => { ev.stopPropagation(); const n = (qtyMap[card.id]||0) + 1; await api.collectionSet(card.id, n); qtyMap[card.id] = n; qtyInput.value = n; owned.add(card.id); } }, '+')
-        ) : el('div', { class: 'text-muted small' }, '');
-        const footer = el('div', { class: 'card-footer-bar' }, idBadge, qtyCtrl);
-        const tileChildren = [];
-        if (topRow.childNodes.length) tileChildren.push(topRow);
-        tileChildren.push(imgWrap, footer);
-        const tile = el('div', {
-          class: 'card h-100 card-tile clickable',
-          onclick: () => openCardModal(card),
-          'data-card-key': card.id || '',
-          'data-card-name': card.name || '',
-          'data-card-set': card.set_code || '',
-          'data-card-rarity': (card.rarity || '').toLowerCase()
-        }, ...tileChildren);
-  results.append(el('div', { class: 'col-12 col-sm-6 col-md-4 col-lg-5ths' }, tile));
-      });
+      if (viewMode === 'list') {
+        const table = el('table', { class: 'table table-dark table-striped align-middle table-hover' });
+        const thead = el('thead', {}, el('tr', {},
+          el('th', { style: 'width:64px' }, 'Image'),
+          el('th', {}, 'ID'),
+          el('th', {}, 'Nom'),
+          el('th', {}, 'Set'),
+          el('th', {}, 'Rareté'),
+          el('th', {}, 'Couleur'),
+          el('th', {}, 'Type'),
+          el('th', { class: 'text-end', style: 'width:160px' }, 'Qté')
+        ));
+        const tbody = el('tbody');
+        data.items.forEach(card => {
+          const tr = el('tr', { class: 'clickable', onclick: () => openCardModal(card) });
+          const img = el('img', { src: card.image_url || 'assets/img/card-placeholder.svg', alt: card.name, loading: 'lazy', decoding: 'async', style: 'width:56px; height:auto; border-radius:.25rem' });
+          let qtyInput; const qty = qtyMap[card.id] || 0;
+          const qtyCtrl = isLogged ? el('div', { class: 'd-inline-flex align-items-center gap-1 justify-content-end w-100' },
+            el('button', { class: 'btn btn-sm btn-outline-secondary', onclick: async (ev) => { ev.stopPropagation(); const n = Math.max(0, (qtyMap[card.id]||0) - 1); await api.collectionSet(card.id, n); qtyMap[card.id] = n; qtyInput.value = n; if (n>0) owned.add(card.id); else owned.delete(card.id); } }, '−'),
+            (qtyInput = el('input', { class:'form-control form-control-sm text-center', type:'number', min:'0', value:String(qty), onclick: (ev)=>ev.stopPropagation(), onchange: async (ev) => { ev.stopPropagation(); let n = parseInt(qtyInput.value||'0',10); if (isNaN(n)||n<0) n=0; await api.collectionSet(card.id, n); qtyMap[card.id] = n; if (n>0) owned.add(card.id); else owned.delete(card.id); } })),
+            el('button', { class: 'btn btn-sm btn-outline-secondary', onclick: async (ev) => { ev.stopPropagation(); const n = (qtyMap[card.id]||0) + 1; await api.collectionSet(card.id, n); qtyMap[card.id] = n; qtyInput.value = n; owned.add(card.id); } }, '+')
+          ) : el('span', { class: 'text-muted small' }, '—');
+          const rareIcon = rarityIcon(card.rarity, 'sm');
+          const cIcon = colorIcon(card.color, 'sm');
+          const tIcon = typeIcon(card.card_type, 'sm');
+          tr.append(
+            el('td', {}, img),
+            el('td', {}, '#' + (card.id||'').toUpperCase()),
+            el('td', {}, card.name||''),
+            el('td', {}, card.set_code||''),
+            el('td', {}, rareIcon ? el('span', { class:'d-inline-flex align-items-center gap-2' }, rareIcon, rarityLabelFromKey(card.rarity||'')) : (rarityLabelFromKey(card.rarity||''))),
+            el('td', {}, cIcon ? cIcon : ''),
+            el('td', {}, tIcon ? tIcon : ''),
+            el('td', { class: 'text-end' }, qtyCtrl)
+          );
+          tbody.append(tr);
+        });
+        table.append(thead, tbody);
+        results.append(table);
+      } else {
+        data.items.forEach(card => {
+          const qty = qtyMap[card.id] || 0;
+          const imgEl = el('img', { src: card.image_url || 'assets/img/card-placeholder.svg', alt: card.name, loading: 'lazy', decoding: 'async' });
+          const imgWrap = el('div', { class: 'card-img-wrapper', onclick: (ev) => { ev.stopPropagation(); openCardModal(card); } }, imgEl);
+          const topRow = el('div', { class: 'top-icon-row' });
+          const oci = colorIcon(card.color, 'sm'); if (oci) topRow.appendChild(el('div', { class: 'icon-pill' }, oci));
+          const oti = typeIcon(card.card_type, 'sm'); if (oti) topRow.appendChild(el('div', { class: 'icon-pill' }, oti));
+          const idBadge = el('div', { class: 'card-id-badge' }, '#' + (card.id || '').toUpperCase());
+          let qtyInput;
+          const qtyCtrl = isLogged ? el('div', { class: 'qty-ctrl' },
+            el('button', { class: 'btn btn-sm btn-outline-secondary', onclick: async (ev) => { ev.stopPropagation(); const n = Math.max(0, (qtyMap[card.id]||0) - 1); await api.collectionSet(card.id, n); qtyMap[card.id] = n; qtyInput.value = n; if (n>0) owned.add(card.id); else owned.delete(card.id); } }, '−'),
+            (qtyInput = el('input', { type: 'number', min: '0', value: String(qty), onchange: async (ev) => { ev.stopPropagation(); let n = parseInt(qtyInput.value||'0',10); if (isNaN(n)||n<0) n=0; await api.collectionSet(card.id, n); qtyMap[card.id] = n; if (n>0) owned.add(card.id); else owned.delete(card.id); } })),
+            el('button', { class: 'btn btn-sm btn-outline-secondary', onclick: async (ev) => { ev.stopPropagation(); const n = (qtyMap[card.id]||0) + 1; await api.collectionSet(card.id, n); qtyMap[card.id] = n; qtyInput.value = n; owned.add(card.id); } }, '+')
+          ) : el('div', { class: 'text-muted small' }, '');
+          const footer = el('div', { class: 'card-footer-bar' }, idBadge, qtyCtrl);
+          const tileChildren = [];
+          if (topRow.childNodes.length) tileChildren.push(topRow);
+          tileChildren.push(imgWrap, footer);
+          const tile = el('div', {
+            class: 'card h-100 card-tile clickable',
+            onclick: () => openCardModal(card),
+            'data-card-key': card.id || '',
+            'data-card-name': card.name || '',
+            'data-card-set': card.set_code || '',
+            'data-card-rarity': (card.rarity || '').toLowerCase()
+          }, ...tileChildren);
+          results.append(el('div', { class: 'col-12 col-sm-6 col-md-4 col-lg-5ths' }, tile));
+        });
+      }
   const total = Number(data.total) || 0;
   const pageSize = Number(data.pageSize) || ps;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -1333,10 +1546,12 @@ router.register('#/cartes', async (root) => {
     el('div', { class: 'col-6 col-md-2 col-lg-2' }, colorDd.root),
     el('div', { class: 'col-6 col-md-2 col-lg-2' }, typeDd.root)
   );
+  const viewBar = el('div', { class: 'd-flex align-items-center mt-2 mb-1' }, viewToggle.root);
+  const actions = el('div', { class: 'd-flex justify-content-between align-items-center mt-3' });
   const rightActions = el('div', { class: 'd-flex align-items-center gap-2' }, pager, pageSizeSel);
   // Sync button moved to Compte; only show right-side controls here
   actions.append(rightActions);
-  root.append(el('h2', {}, 'Cartes'), searchBar, results, actions);
+  root.append(el('h2', {}, 'Cartes'), searchBar, viewBar, results, actions);
   load();
 });
 
@@ -1369,7 +1584,69 @@ router.register('#/compte', async (root) => {
       el('div', { class: 'form-check form-switch m-0' }, subToggle, el('label', { class: 'form-check-label ms-2' }, 'Recevoir des notifications des nouvelles extensions'))
     )
   );
-  root.append(header, info, notif);
+  // Partage de collection (affiché après le bloc notifications)
+  const shareCard = el('div', { class: 'card mb-3' });
+  const shareBody = el('div', { class: 'card-body' });
+  shareCard.appendChild(shareBody);
+  const shareTitle = el('div', { class: 'h5 mb-2' }, 'Partager ma collection');
+  const shareSwitchWrap = el('div', { class: 'form-check form-switch mb-2' });
+  const shareToggle = el('input', { class: 'form-check-input', type: 'checkbox', id: 'shareToggle' });
+  const shareLabel = el('label', { class: 'form-check-label ms-2', for: 'shareToggle' }, 'Activer le lien public (lecture seule)');
+  shareSwitchWrap.append(shareToggle, shareLabel);
+  const shareStatus = el('div', { class: 'small text-muted mb-2' }, 'Chargement…');
+  const shareLinkWrap = el('div', { class: 'input-group mb-2', style: 'display:none;' });
+  const shareLinkInput = el('input', { class: 'form-control form-control-sm', type: 'text', readonly: true });
+  const shareCopyBtn = el('button', { class: 'btn btn-outline-secondary btn-sm', type: 'button' }, 'Copier');
+  shareCopyBtn.addEventListener('click', () => {
+    shareLinkInput.select();
+    try { document.execCommand('copy'); toast('Lien copié'); } catch { navigator.clipboard && navigator.clipboard.writeText(shareLinkInput.value).then(()=>toast('Lien copié')).catch(()=>toast('Copie impossible', true)); }
+  });
+  shareLinkWrap.append(shareLinkInput, shareCopyBtn);
+  const sharePreviewBtn = el('a', { href: '#', class: 'btn btn-outline-primary btn-sm mb-2', style: 'display:none;', target: '_blank' }, 'Ouvrir le lien');
+  shareBody.append(shareTitle, shareSwitchWrap, shareStatus, shareLinkWrap, sharePreviewBtn);
+  async function refreshShareInfo() {
+    try {
+      const info = await api.shareInfo();
+      shareToggle.checked = !!info.enabled;
+      if (info.enabled && info.url) {
+        shareStatus.textContent = 'Votre collection est publique en lecture seule.';
+        shareLinkInput.value = info.url;
+        shareLinkWrap.style.display = '';
+        sharePreviewBtn.style.display = '';
+        sharePreviewBtn.href = info.url;
+      } else {
+        shareStatus.textContent = 'Désactivé. Activez pour générer un lien public.';
+        shareLinkWrap.style.display = 'none';
+        sharePreviewBtn.style.display = 'none';
+      }
+    } catch (e) {
+      shareStatus.textContent = 'Erreur de chargement du statut.';
+    }
+  }
+  shareToggle.addEventListener('change', async () => {
+    shareStatus.textContent = 'Mise à jour…';
+    try {
+      const info = await api.shareSet(shareToggle.checked);
+      toast('Préférences de partage mises à jour');
+      if (info.enabled && info.url) {
+        shareStatus.textContent = 'Votre collection est publique.';
+        shareLinkInput.value = info.url;
+        shareLinkWrap.style.display = '';
+        sharePreviewBtn.style.display = '';
+        sharePreviewBtn.href = info.url;
+      } else {
+        shareStatus.textContent = 'Partage désactivé.';
+        shareLinkWrap.style.display = 'none';
+        sharePreviewBtn.style.display = 'none';
+      }
+    } catch (e) {
+      shareStatus.textContent = 'Erreur: impossible de mettre à jour.';
+      toast('Erreur: ' + (e.message||''), true);
+    }
+  });
+  refreshShareInfo();
+  // Ordre voulu: header, infos, notifications, puis partage
+  root.append(header, info, notif, shareCard);
   if (me.is_admin) {
     // Admin tools
     const admin = el('div', { class: 'card' },
@@ -1380,10 +1657,11 @@ router.register('#/compte', async (root) => {
             try { const r = await api.cardsRefresh(); toast('Synchronisé: ' + ((r && r.synced) || 0) + ' cartes'); } catch(e) { toast('Erreur: ' + (e.message||''), true); }
           }; return b; })(),
           (function(){ const b = el('button', { class: 'btn btn-outline-secondary' }, 'Scanner CDN (avancé)'); b.onclick = async () => {
-            // Use current set from local filter if available
             const defaultSet = 'OGN';
             try { await openCdnScanModal(defaultSet); } catch {}
-          }; return b; })()
+          }; return b; })(),
+          el('a', { href: 'admin-cards.php', target: '_blank', class: 'btn btn-outline-secondary' }, 'Admin cartes'),
+          el('a', { href: 'admin_articles.php', target: '_blank', class: 'btn btn-outline-secondary' }, 'Admin actualités')
         )
       )
     );
@@ -1397,61 +1675,496 @@ router.register('#/collection', async (root) => {
   try {
     const me = await api.me();
     alert.remove();
-    const list = el('div', { class: 'row g-3' });
-    async function load() {
-      list.innerHTML = 'Chargement…';
-      const data = await api.collectionGet();
-      list.innerHTML = '';
-      data.items.forEach(it => {
-        const qtyInput = (() => { const inp = el('input', { type: 'number', min: '0', value: it.qty || 0, class: 'form-control text-center' }); inp.addEventListener('click', ev => ev.stopPropagation()); return inp; })();
-        const imgWrap = el('div', { class: 'card-img-wrapper', onclick: (ev) => { ev.stopPropagation(); openCardModal(it); } },
-          el('img', { src: it.image_url || 'assets/img/card-placeholder.svg', alt: it.name, loading: 'lazy', decoding: 'async' })
-        );
-  const idBadge = el('div', { class: 'card-id-badge' }, '#' + (it.card_id || '').toUpperCase());
-  // Icons row ABOVE the image on collection card
-  const topRow2 = el('div', { class: 'top-icon-row' });
-  const oci2 = colorIcon(it.color, 'sm');
-  if (oci2) topRow2.appendChild(el('div', { class: 'icon-pill' }, oci2));
-  const oti2 = typeIcon(it.card_type, 'sm');
-  if (oti2) topRow2.appendChild(el('div', { class: 'icon-pill' }, oti2));
-        const qtyCtrl = el('div', { class: 'qty-ctrl' },
-          el('button', { class: 'btn btn-sm btn-outline-secondary', onclick: async (ev) => { ev.stopPropagation(); const n = Math.max(0, (it.qty||0) - 1); await api.collectionSet(it.card_id, n); it.qty = n; qtyInput.value = n; if (n === 0) wrap.remove(); } }, '−'),
-          qtyInput,
-          el('button', { class: 'btn btn-sm btn-outline-secondary', onclick: async (ev) => { ev.stopPropagation(); const n = (it.qty||0) + 1; await api.collectionSet(it.card_id, n); it.qty = n; qtyInput.value = n; } }, '+')
-        );
-        const footer = el('div', { class: 'card-footer-bar', onclick: (ev) => { ev.stopPropagation(); } }, idBadge, qtyCtrl);
-        const trash = el('button', { class: 'corner-trash', title: 'Retirer (Alt/Ctrl: tout retirer)', onclick: async (ev) => {
-          ev.stopPropagation();
-          try {
-            const full = !!(ev.altKey || ev.ctrlKey || ev.shiftKey);
-            const next = full ? 0 : Math.max(0, (it.qty||0) - 1);
-            await api.collectionSet(it.card_id, next);
-            it.qty = next;
-            qtyInput.value = next;
-            if (full) {
-              toast('Carte retirée de la collection');
-            } else {
-              toast('Quantité mise à jour: ' + next);
-            }
-            if (next === 0) wrap.remove();
-          } catch (e) { toast('Erreur: ' + (e.message||''), true); }
-        } }, (function(){ const s = document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 16 16'); s.innerHTML = '<path fill="currentColor" d="M6.5 1a1 1 0 0 0-1 1H3a.5.5 0 0 0 0 1h10a.5.5 0 0 0 0-1h-2.5a1 1 0 0 0-1-1h-3ZM4.118 5.5l.427 7.67A2 2 0 0 0 6.538 15h2.924a2 2 0 0 0 1.993-1.83l.427-7.67H4.118ZM5 5.5h6l-.42 7.545a1 1 0 0 1-.997.955H6.538a1 1 0 0 1-.997-.955L5 5.5Zm2 .5a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5A.5.5 0 0 1 7 6Zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5Z"/>'; return s; })());
-        const cardChildren = [];
-        if (topRow2.childNodes.length) cardChildren.push(topRow2);
-        cardChildren.push(imgWrap, footer, trash);
-        const card = el('div', { class: 'card h-100 clickable position-relative card-tile', onclick: () => openCardModal(it) }, ...cardChildren);
-  const wrap = el('div', { class: 'col-12 col-sm-6 col-md-4 col-lg-5ths' }, card);
-        list.append(wrap);
+    // — Filtres repris de la page Cartes —
+    const q = el('input', { class: 'form-control', placeholder: 'Recherche (nom)' });
+    const setSel = el('select', { class: 'form-select', title: 'Set' },
+      el('option', { value: '' }, 'Tous les sets'),
+      el('option', { value: 'OGN' }, 'OGN - Origins'),
+      el('option', { value: 'OGS' }, 'OGS - Origins Proving Grounds'),
+      el('option', { value: 'ARC' }, 'ARC - Arcane'),
+      el('option', { value: 'SPF' }, 'SPF - Spiritforged')
+    );
+    const allowedPageSizes = [12, 24, 30, 60, 96];
+    let savedPs = parseInt(localStorage.getItem('collection.pageSize') || '30', 10);
+    if (!allowedPageSizes.includes(savedPs)) savedPs = 30;
+    const pageSizeSel = el('select', { class: 'form-select form-select-sm', title: 'Résultats par page', 'aria-label': 'Résultats par page', style: 'width:90px' });
+    allowedPageSizes.forEach(n => { const opt = el('option', { value: String(n) }, String(n)); if (n === savedPs) opt.setAttribute('selected',''); pageSizeSel.appendChild(opt); });
+    pageSizeSel.addEventListener('change', () => { const v = parseInt(pageSizeSel.value||'30', 10)||30; localStorage.setItem('collection.pageSize', String(v)); page = 1; render(); });
+    function rarityLabelFromKey(k) { const m = { common:'Commune', uncommon:'Peu commune', rare:'Rare', epic:'Épique', legendary:'Légendaire' }; return m[(k||'').toLowerCase()] || (k ? (k.charAt(0).toUpperCase()+k.slice(1)) : 'Toutes raretés'); }
+    let rarityIconMap = {};
+    function rarityIcon(key, size='sm') { const k=(key||'').toLowerCase(); const url=rarityIconMap[k] || (k ? ('assets/img/rarity/'+k+'.webp') : null); return url ? iconImg(url, k, size) : null; }
+    let selectedRarity = '';
+    function makeIconDropdown(title, options, getIconFn, onChange) {
+      const wrap = el('div', { class: 'dropdown w-100' });
+      const btn = el('button', { class: 'btn btn-outline-secondary w-100 dropdown-toggle', type:'button', 'data-bs-toggle':'dropdown', 'aria-expanded':'false' }, title);
+      const menu = el('ul', { class: 'dropdown-menu dropdown-menu-dark w-100' });
+      function renderBtnLabel(opt){ btn.innerHTML=''; if (opt && opt.key){ const icon=getIconFn(opt.key,'sm'); if (icon) btn.appendChild(icon); btn.appendChild(document.createTextNode(' '+opt.label)); } else { btn.textContent=title; } }
+      options.forEach(opt => { const li=document.createElement('li'); const a=el('a',{ class:'dropdown-item d-flex align-items-center gap-2', href:'#', onclick:(e)=>{ e.preventDefault(); onChange(opt.key); renderBtnLabel(opt);} }); if (opt.key){ const icon=getIconFn(opt.key,'sm'); if (icon) a.appendChild(icon);} a.appendChild(document.createTextNode(opt.label)); li.appendChild(a); menu.appendChild(li); });
+      wrap.append(btn, menu); return { root: wrap, setSelected: (key) => { const opt=options.find(o=>o.key===key)||options[0]; renderBtnLabel(opt); } };
+    }
+    const rarityDd = makeIconDropdown('Rareté', [{ key:'', label:'Toutes raretés'}], rarityIcon, (key)=>{ selectedRarity=key; page=1; render(); });
+    rarityDd.setSelected('');
+    try { const data = await api.rarityIcons(); const icons=(data.icons||[]); rarityIconMap=Object.fromEntries(icons.map(it=>[String(it.key).toLowerCase(), it.url])); const opts=[{ key:'', label:'Toutes raretés'}].concat(icons.map(it=>({ key:it.key, label:rarityLabelFromKey(it.key)}))); const rebuilt = makeIconDropdown('Rareté', opts, rarityIcon, (key)=>{ selectedRarity=key; page=1; render(); }); rarityDd.root.replaceWith(rebuilt.root); rebuilt.setSelected(''); rarityDd.root=rebuilt.root; } catch {}
+    const colors = [ { key:'', label:'Toutes couleurs' }, { key:'body', label:'Body' }, { key:'calm', label:'Calm' }, { key:'chaos', label:'Chaos' }, { key:'colorless', label:'Incolore' }, { key:'fury', label:'Fury' }, { key:'mind', label:'Mind' }, { key:'order', label:'Order' } ];
+    const types = [ { key:'', label:'Tous types' }, { key:'unit', label:'Unit' }, { key:'spell', label:'Spell' }, { key:'champion', label:'Champion' }, { key:'battlefield', label:'Battlefield' }, { key:'gear', label:'Gear' }, { key:'legend', label:'Legend' }, { key:'rune', label:'Rune' }, { key:'token', label:'Token' } ];
+    let selectedColor=''; let selectedType='';
+    const colorDd = makeIconDropdown('Couleur', colors, colorIcon, (key)=>{ selectedColor=key; page=1; render(); });
+    const typeDd = makeIconDropdown('Type', types, typeIcon, (key)=>{ selectedType=key; page=1; render(); });
+    colorDd.setSelected(''); typeDd.setSelected('');
+    const debounce = (fn, wait=300) => { let t; return (...args) => { clearTimeout(t); t=setTimeout(()=>fn(...args), wait); }; };
+    q.addEventListener('input', debounce(()=>{ page=1; render(); }, 300));
+    setSel.addEventListener('change', ()=>{ page=1; render(); });
+    // Données & rendu
+    const list = el('div', { class: 'row g-3 mt-3' });
+    const pager = el('div', { class: 'd-flex align-items-center gap-2' });
+    // Switch: include missing (not owned) cards
+    const showMissingKey = 'collection.showMissing';
+    let showMissing = localStorage.getItem(showMissingKey) === '1';
+    const missingSwitch = (function(){
+      const wrap = el('div', { class: 'form-check form-switch ms-3' });
+      const inp = el('input', { class: 'form-check-input', type: 'checkbox', id: 'showMissingSwitch' });
+      const lbl = el('label', { class: 'form-check-label small', for: 'showMissingSwitch' }, 'Inclure non obtenues');
+      inp.checked = showMissing;
+      inp.addEventListener('change', async ()=>{ showMissing = inp.checked; localStorage.setItem(showMissingKey, showMissing ? '1':'0'); await fetchAll(); });
+      wrap.append(inp, lbl);
+      return wrap;
+    })();
+    // One-time style for missing state
+    if (!document.getElementById('collection-missing-style')) {
+      const style = document.createElement('style');
+      style.id = 'collection-missing-style';
+      style.textContent = `.card-missing{opacity:.35;filter:grayscale(.7);} .card-missing:hover{opacity:.6;} .card-missing::after{content:'Non obtenue';position:absolute;top:4px;left:4px;background:rgba(0,0,0,.55);color:#fff;font-size:.55rem;padding:2px 4px;border-radius:3px;letter-spacing:.5px;text-transform:uppercase;} tr.missing{opacity:.45;} tr.missing:hover{opacity:.75;}`;
+      document.head.appendChild(style);
+    }
+    // View toggle (grid/list)
+    const viewModeKeyC = 'collection.viewMode';
+    let viewModeC = (localStorage.getItem(viewModeKeyC) === 'list') ? 'list' : 'grid';
+    function makeViewToggleC() {
+      const wrap = el('div', { class: 'btn-group btn-group-sm', role: 'group', 'aria-label': 'Affichage' });
+      const btnGrid = el('button', { class: 'btn btn-outline-secondary', title: 'Grille', onclick: () => { viewModeC='grid'; localStorage.setItem(viewModeKeyC,'grid'); refresh(); render(); } }, (function(){ const s=document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 16 16'); s.style.width='1em'; s.style.height='1em'; s.innerHTML='<path fill="currentColor" d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5zm-8 8A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5zm8 0A1.5 1.5 0 0 1 10.5 9h3A1.5 1.5 0 0 1 15 10.5v3A1.5 1.5 0 0 1 13.5 15h-3A1.5 1.5 0 0 1 9 13.5z"/>'; return s; })());
+      const btnList = el('button', { class: 'btn btn-outline-secondary', title: 'Liste', onclick: () => { viewModeC='list'; localStorage.setItem(viewModeKeyC,'list'); refresh(); render(); } }, (function(){ const s=document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 16 16'); s.style.width='1em'; s.style.height='1em'; s.innerHTML='<path fill="currentColor" d="M2 4a1 1 0 0 1 1-1h10a1 1 0 1 1 0 2H3a1 1 0 0 1-1-1m0 4a1 1 0 0 1 1-1h10a1 1 0 1 1 0 2H3a1 1 0 0 1-1-1m1 3a1 1 0 1 0 0 2h10a1 1 0 1 0 0-2z"/>'; return s; })());
+      function refresh() {
+        btnGrid.classList.toggle('btn-secondary', viewModeC==='grid');
+        btnGrid.classList.toggle('btn-outline-secondary', viewModeC!=='grid');
+        btnList.classList.toggle('btn-secondary', viewModeC==='list');
+        btnList.classList.toggle('btn-outline-secondary', viewModeC!=='list');
+      }
+      wrap.append(btnGrid, btnList);
+      return { root: wrap, refresh };
+    }
+    const viewToggleC = makeViewToggleC(); viewToggleC.refresh();
+    let page = 1; let allItems = []; let loadSeq = 0;
+    function __parseCardId(raw) {
+      const s = String(raw||'').toUpperCase().trim();
+      // Formats attendus: OGN-310, OGN310, OGN-310A (suffixe optionnel)
+      let m = /^([A-Z]{2,5})[- ]?(\d{1,4})([A-Z])?$/.exec(s);
+      if (m) return { set: m[1], num: parseInt(m[2], 10) || 0, suf: (m[3]||'').toLowerCase(), raw: s };
+      // Fallback permissif: essaye d'extraire set + numéro même si séparateurs variés
+      m = /([A-Z]{2,5}).*?(\d{1,4})([A-Z])?$/.exec(s);
+      if (m) return { set: m[1], num: parseInt(m[2], 10) || 0, suf: (m[3]||'').toLowerCase(), raw: s };
+      return { set: s, num: 0, suf: '', raw: s };
+    }
+    function __compareById(a, b) {
+      const A = __parseCardId(a.card_id || a.id);
+      const B = __parseCardId(b.card_id || b.id);
+      if (A.set !== B.set) return A.set < B.set ? -1 : 1;
+      if (A.num !== B.num) return A.num - B.num;
+      const as = A.suf || ''; const bs = B.suf || '';
+      if (as !== bs) return as < bs ? -1 : 1;
+      return A.raw.localeCompare(B.raw);
+    }
+    async function fetchAll() {
+      const seq=++loadSeq; list.innerHTML='Chargement…';
+      try {
+        const owned = await api.collectionGet();
+        if (!showMissing) {
+          if (seq!==loadSeq) return; allItems = (owned.items||[]).slice().sort(__compareById); render(); return;
+        }
+        // When showing missing: fetch all cards and merge with owned (qty 0 for missing)
+        const allCards = [];
+        let p = 1; const ps = 300; let total = Infinity; let guard = 0;
+        while (allCards.length < total && guard < 30) {
+          const pageData = await api.cardsList('', '', '', p, ps, '', '');
+          const items = pageData.items || [];
+          items.forEach(c => allCards.push(c));
+          total = pageData.total || allCards.length;
+          if (items.length < ps) break; p++; guard++;
+        }
+        const mapOwned = Object.fromEntries((owned.items||[]).map(it => [it.card_id, it]));
+        const merged = allCards.map(c => mapOwned[c.id] ? mapOwned[c.id] : ({
+          card_id: c.id, id: c.id, name: c.name, image_url: c.image_url, rarity: c.rarity, color: c.color, card_type: c.card_type, set_code: c.set_code, qty: 0
+        }));
+        if (seq!==loadSeq) return; allItems = merged.slice().sort(__compareById); render();
+      } catch (e) {
+        list.innerHTML='<div class="alert alert-danger">'+(e.message||'Erreur')+'</div>';
+      }
+    }
+    function applyFilters(items) {
+      return items.filter(it => {
+        const name = (it.name||'').toLowerCase();
+        const qv = q.value.trim().toLowerCase();
+        if (qv && !name.includes(qv)) return false;
+        if (selectedRarity && String(it.rarity||'').toLowerCase() !== selectedRarity.toLowerCase()) return false;
+        if (selectedColor && String(it.color||'').toLowerCase() !== selectedColor.toLowerCase()) return false;
+        if (selectedType && String(it.card_type||'').toLowerCase() !== selectedType.toLowerCase()) return false;
+        if (setSel.value && String(it.set_code||'').toUpperCase() !== setSel.value.toUpperCase()) return false;
+        return true;
       });
     }
-    const header = el('div', { class: 'd-flex justify-content-between align-items-center mb-2' },
-      el('h2', {}, 'Ma collection'),
-      (function(){ const b = el('button', { class: 'btn btn-outline-primary' }, 'Ajouter via caméra'); b.onclick = async (ev) => { ev.preventDefault(); try { await openScanModal(); } catch(_){} }; return b; })()
+    function render() {
+      const ps = parseInt(pageSizeSel.value||'30', 10) || 30;
+      const filtered = applyFilters(allItems);
+      const total = filtered.length; const totalPages = Math.max(1, Math.ceil(total / ps));
+      if (page > totalPages) page = totalPages;
+      list.innerHTML='';
+      if (viewModeC === 'list') {
+        const table = el('table', { class: 'table table-dark table-striped align-middle table-hover' });
+        const thead = el('thead', {}, el('tr', {},
+          el('th', { style:'width:64px' }, 'Image'),
+          el('th', {}, 'ID'),
+          el('th', {}, 'Nom'),
+          el('th', {}, 'Set'),
+          el('th', {}, 'Rareté'),
+          el('th', {}, 'Couleur'),
+          el('th', {}, 'Type'),
+          el('th', { class:'text-end', style:'width:160px' }, 'Qté')
+        ));
+        const tbody = el('tbody');
+        filtered.slice((page-1)*ps, (page)*ps).forEach(it => {
+          const tr = el('tr', { class:'clickable', onclick: () => openCardModal(it) });
+          const img = el('img', { src: it.image_url || 'assets/img/card-placeholder.svg', alt: it.name, loading:'lazy', decoding:'async', style:'width:56px; height:auto; border-radius:.25rem' });
+          let qtyInput;
+          const qtyCtrl = el('div', { class:'d-inline-flex align-items-center gap-1 justify-content-end w-100' },
+            el('button', { class:'btn btn-sm btn-outline-secondary', onclick: async (ev)=>{ ev.stopPropagation(); const n=Math.max(0,(it.qty||0)-1); await api.collectionSet(it.card_id, n); it.qty=n; qtyInput.value=n; if(n===0){ allItems = allItems.filter(x => x.card_id !== it.card_id); render(); } } }, '−'),
+            (qtyInput = el('input', { class:'form-control form-control-sm text-center', type:'number', min:'0', value:String(it.qty||0), onclick:(ev)=>ev.stopPropagation(), onchange: async (ev)=>{ ev.stopPropagation(); let n=parseInt(qtyInput.value||'0',10); if(isNaN(n)||n<0) n=0; await api.collectionSet(it.card_id,n); it.qty=n; if(n===0){ allItems = allItems.filter(x => x.card_id !== it.card_id); render(); } } })),
+            el('button', { class:'btn btn-sm btn-outline-secondary', onclick: async (ev)=>{ ev.stopPropagation(); const n=(it.qty||0)+1; await api.collectionSet(it.card_id,n); it.qty=n; qtyInput.value=n; } }, '+')
+          );
+          const rareIcon = rarityIcon(it.rarity,'sm');
+          const cIcon = colorIcon(it.color,'sm');
+          const tIcon = typeIcon(it.card_type,'sm');
+          if ((it.qty||0) === 0) tr.classList.add('missing');
+          tr.append(
+            el('td', {}, img),
+            el('td', {}, '#' + ((it.card_id||it.id||'').toUpperCase())),
+            el('td', {}, it.name||''),
+            el('td', {}, it.set_code||''),
+            el('td', {}, rareIcon ? el('span', { class:'d-inline-flex align-items-center gap-2' }, rareIcon, rarityLabelFromKey(it.rarity||'')) : rarityLabelFromKey(it.rarity||'')),
+            el('td', {}, cIcon ? cIcon : ''),
+            el('td', {}, tIcon ? tIcon : ''),
+            el('td', { class:'text-end' }, qtyCtrl)
+          );
+          tbody.append(tr);
+        });
+        table.append(thead, tbody); list.append(table);
+      } else {
+        filtered.slice((page-1)*ps, (page)*ps).forEach(it => {
+        const qtyInput = (() => { const inp = el('input', { type:'number', min:'0', value: it.qty||0, class:'form-control text-center' }); inp.addEventListener('click', ev => ev.stopPropagation()); return inp; })();
+        const imgWrap = el('div', { class:'card-img-wrapper', onclick:(ev)=>{ ev.stopPropagation(); openCardModal(it); } }, el('img', { src: it.image_url || 'assets/img/card-placeholder.svg', alt: it.name, loading:'lazy', decoding:'async' }));
+        const idBadge = el('div', { class:'card-id-badge' }, '#' + ((it.card_id || it.id || '')).toUpperCase());
+        const topRow = el('div', { class:'top-icon-row' });
+        const oci = colorIcon(it.color, 'sm'); if (oci) topRow.appendChild(el('div', { class:'icon-pill' }, oci));
+        const oti = typeIcon(it.card_type, 'sm'); if (oti) topRow.appendChild(el('div', { class:'icon-pill' }, oti));
+        const qtyCtrl = el('div', { class:'qty-ctrl' },
+          el('button', { class:'btn btn-sm btn-outline-secondary', onclick: async (ev)=>{ ev.stopPropagation(); const n=Math.max(0,(it.qty||0)-1); await api.collectionSet(it.card_id, n); it.qty=n; qtyInput.value=n; if(n===0){ allItems = allItems.filter(x => x.card_id !== it.card_id); render(); } } }, '−'),
+          qtyInput,
+          el('button', { class:'btn btn-sm btn-outline-secondary', onclick: async (ev)=>{ ev.stopPropagation(); const n=(it.qty||0)+1; await api.collectionSet(it.card_id, n); it.qty=n; qtyInput.value=n; } }, '+')
+        );
+        const footer = el('div', { class:'card-footer-bar', onclick:(ev)=>{ ev.stopPropagation(); } }, idBadge, qtyCtrl);
+        const trash = el('button', { class:'corner-trash', title:'Retirer (Alt/Ctrl: tout retirer)', onclick: async (ev)=>{
+          ev.stopPropagation();
+          try { const full = !!(ev.altKey || ev.ctrlKey || ev.shiftKey); const next = full ? 0 : Math.max(0,(it.qty||0)-1); await api.collectionSet(it.card_id, next); it.qty = next; qtyInput.value = next; toast(full ? 'Carte retirée de la collection' : ('Quantité mise à jour: '+next)); if (next === 0){ allItems = allItems.filter(x => x.card_id !== it.card_id); render(); } }
+          catch(e){ toast('Erreur: '+(e.message||''), true); }
+        } }, (function(){ const s=document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 16 16'); s.innerHTML='<path fill="currentColor" d="M6.5 1a1 1 0 0 0-1 1H3a.5.5 0 0 0 0 1h10a.5.5 0 0 0 0-1h-2.5a1 1 0 0 0-1-1h-3ZM4.118 5.5l.427 7.67A2 2 0 0 0 6.538 15h2.924a2 2 0 0 0 1.993-1.83l.427-7.67H4.118ZM5 5.5h6l-.42 7.545a1 1 0 0 1-.997.955H6.538a1 1 0 0 1-.997-.955L5 5.5Zm2 .5a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5A.5.5 0 0 1 7 6Zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5Z"/>'; return s; })());
+        const children = []; if (topRow.childNodes.length) children.push(topRow); children.push(imgWrap, footer, trash);
+          const classes = 'card h-100 clickable position-relative card-tile' + ((it.qty||0)===0 ? ' card-missing' : '');
+          const card = el('div', { class: classes, onclick: ()=>openCardModal(it) }, ...children);
+        list.append(el('div', { class:'col-12 col-sm-6 col-md-4 col-lg-5ths' }, card));
+        });
+      }
+      pager.innerHTML='';
+      pager.append(
+        el('button', { type:'button', class:'btn btn-sm btn-outline-secondary', disabled: page<=1, onclick: ()=>{ page=Math.max(1,page-1); render(); } }, 'Précédent'),
+        el('div', { class:'small text-light', style:'white-space:nowrap' }, `Page ${page} / ${totalPages}`),
+        el('button', { type:'button', class:'btn btn-sm btn-outline-secondary', disabled: page>=totalPages, onclick: ()=>{ page=Math.min(totalPages,page+1); render(); } }, 'Suivant')
+      );
+    }
+    // Barre de recherche/filtres
+    const searchBar = el('div', { class:'row g-2' },
+      el('div', { class:'col-12 col-md-4 col-lg-4' }, q),
+      el('div', { class:'col-6 col-md-2 col-lg-2' }, rarityDd.root),
+      el('div', { class:'col-6 col-md-2 col-lg-2' }, setSel),
+      el('div', { class:'col-6 col-md-2 col-lg-2' }, colorDd.root),
+      el('div', { class:'col-6 col-md-2 col-lg-2' }, typeDd.root)
     );
-    root.append(header, list);
-    load();
+  const actions = el('div', { class:'d-flex justify-content-between align-items-center mt-3' });
+  const viewBarC = el('div', { class:'d-flex align-items-center mt-2 mb-1 gap-3' }, viewToggleC.root, missingSwitch);
+  const rightActions = el('div', { class:'d-flex align-items-center gap-2' }, pager, pageSizeSel);
+  actions.append(rightActions);
+  const header = el('div', { class: 'd-flex justify-content-between align-items-center mb-2' },
+    el('h2', {}, 'Ma collection'),
+    (function(){ const b=el('button', { class:'btn btn-outline-primary' }, 'Ajouter via caméra'); b.onclick=async(ev)=>{ ev.preventDefault(); try { await openScanModal(); } catch(_){} }; return b; })()
+  );
+  root.append(header, searchBar, viewBarC, list, actions);
+    await fetchAll();
   } catch (e) {
+    // Non connecté: rediriger vers la page connexion
     root.append(alert);
+    setTimeout(() => { location.hash = '#/connexion'; }, 50);
+  }
+});
+
+// Public shared collection (lecture seule) via token (#/p/<token>)
+router.register('#/p/*', async (root, ctx) => {
+  root.innerHTML = '';
+  const token = (ctx && ctx.parts && ctx.parts[0]) ? ctx.parts[0] : '';
+  if (!token) { root.append(el('div', { class: 'alert alert-warning' }, 'Lien de partage invalide.')); return; }
+  const hdr = el('div', { class: 'd-flex justify-content-between align-items-center mb-2 flex-wrap gap-2' },
+    el('h2', { class:'m-0' }, 'Collection partagée'),
+    el('div', { class:'d-flex flex-wrap gap-2 align-items-center' },
+      el('a', { href: '#/' , class: 'btn btn-outline-secondary btn-sm' }, 'Accueil')
+    )
+  );
+  const status = el('div', { class: 'small text-muted mb-2' }, 'Chargement…');
+  // Filtres (lecture seule mais appliqués côté client)
+  const q = el('input', { class:'form-control form-control-sm', placeholder:'Recherche (nom ou ID)' });
+  const raritySel = el('select', { class:'form-select form-select-sm', style:'min-width:140px' },
+    el('option', { value:'' }, 'Toutes raretés'),
+    el('option', { value:'common' }, 'Commune'),
+    el('option', { value:'uncommon' }, 'Peu commune'),
+    el('option', { value:'rare' }, 'Rare'),
+    el('option', { value:'epic' }, 'Épique'),
+    el('option', { value:'legendary' }, 'Légendaire')
+  );
+  const setSel = el('select', { class:'form-select form-select-sm', style:'min-width:140px' },
+    el('option', { value:'' }, 'Tous sets'),
+    el('option', { value:'OGN' }, 'OGN'),
+    el('option', { value:'OGS' }, 'OGS'),
+    el('option', { value:'ARC' }, 'ARC'),
+    el('option', { value:'SPF' }, 'SPF')
+  );
+  const colorSel = el('select', { class:'form-select form-select-sm', style:'min-width:140px' },
+    el('option', { value:'' }, 'Toutes couleurs'),
+    el('option', { value:'body' }, 'Body'),
+    el('option', { value:'calm' }, 'Calm'),
+    el('option', { value:'chaos' }, 'Chaos'),
+    el('option', { value:'colorless' }, 'Incolore'),
+    el('option', { value:'fury' }, 'Fury'),
+    el('option', { value:'mind' }, 'Mind'),
+    el('option', { value:'order' }, 'Order')
+  );
+  const typeSel = el('select', { class:'form-select form-select-sm', style:'min-width:140px' },
+    el('option', { value:'' }, 'Tous types'),
+    el('option', { value:'unit' }, 'Unit'),
+    el('option', { value:'spell' }, 'Spell'),
+    el('option', { value:'champion' }, 'Champion'),
+    el('option', { value:'battlefield' }, 'Battlefield'),
+    el('option', { value:'gear' }, 'Gear'),
+    el('option', { value:'legend' }, 'Legend'),
+    el('option', { value:'rune' }, 'Rune'),
+    el('option', { value:'token' }, 'Token')
+  );
+  // Vue (grille ou liste)
+  let currentView = localStorage.getItem('public.view') === 'list' ? 'list' : 'grid';
+  const viewToggle = (function(){
+    const wrap = el('div', { class:'btn-group btn-group-sm' });
+    const btnGrid = el('button', { type:'button', class:'btn btn-outline-secondary' }, 'Grille');
+    const btnList = el('button', { type:'button', class:'btn btn-outline-secondary' }, 'Liste');
+    function sync(){ btnGrid.classList.toggle('active', currentView==='grid'); btnList.classList.toggle('active', currentView==='list'); }
+    btnGrid.onclick = ()=>{ currentView='grid'; localStorage.setItem('public.view','grid'); sync(); render(); };
+    btnList.onclick = ()=>{ currentView='list'; localStorage.setItem('public.view','list'); sync(); render(); };
+    sync(); wrap.append(btnGrid, btnList); return wrap;
+  })();
+  const filtersRow = el('div', { class:'row g-2 mb-2 align-items-stretch' },
+    el('div', { class:'col-12 col-md-4 col-lg-3' }, q),
+    el('div', { class:'col-6 col-md-2 col-lg-2' }, raritySel),
+    el('div', { class:'col-6 col-md-2 col-lg-2' }, setSel),
+    el('div', { class:'col-6 col-md-2 col-lg-2' }, colorSel),
+    el('div', { class:'col-6 col-md-2 col-lg-2' }, typeSel)
+  );
+  // Inclure non obtenues toggle
+  const showMissingKey = 'public.showMissing';
+  let showMissing = localStorage.getItem(showMissingKey) === '1';
+  const missingSwitch = (function(){
+    const wrap = el('div', { class:'form-check form-switch m-0' });
+    const inp = el('input', { class:'form-check-input', type:'checkbox', id:'publicShowMissingSwitch' });
+    const lbl = el('label', { class:'form-check-label small ms-2', for:'publicShowMissingSwitch' }, 'Inclure non obtenues');
+    inp.checked = showMissing;
+    inp.addEventListener('change', async () => {
+      showMissing = inp.checked; localStorage.setItem(showMissingKey, showMissing ? '1':'0');
+      if (showMissing && !allCardsFull.length) {
+        status.textContent = 'Chargement des cartes manquantes…';
+        try { await loadAllCards(); } catch(e){ /* ignore */ }
+        status.textContent = allItemsOwned.length ? ('Total cartes possédées: ' + allItemsOwned.reduce((a,c)=>a+(c.qty?1:0),0)) : 'Aucune carte.';
+      }
+      render();
+    });
+    wrap.append(inp, lbl); return wrap;
+  })();
+  // Place the switch visibly inside the filters row (last column)
+  filtersRow.append(
+    el('div', { class:'col-6 col-md-4 col-lg-3 d-flex align-items-center' }, missingSwitch)
+  );
+  // Inject style for missing state (reuse private collection styling if absent)
+  if (!document.getElementById('collection-missing-style')) {
+    const style = document.createElement('style');
+    style.id = 'collection-missing-style';
+    style.textContent = `.card-missing{opacity:.35;filter:grayscale(.65);} .card-missing:hover{opacity:.6;} tr.missing{opacity:.45;} tr.missing:hover{opacity:.75;}`;
+    document.head.appendChild(style);
+  }
+  // Pagination + page size
+  const allowedPageSizes = [12, 24, 30, 60, 96];
+  let page = 1;
+  let pageSize = parseInt(localStorage.getItem('public.pageSize') || '30', 10);
+  if (!allowedPageSizes.includes(pageSize)) pageSize = 30;
+  const pageSizeSel = el('select', { class: 'form-select form-select-sm', title: 'Résultats par page', 'aria-label': 'Résultats par page', style: 'width:90px' });
+  allowedPageSizes.forEach(n => { const opt = el('option', { value: String(n) }, String(n)); if (n === pageSize) opt.setAttribute('selected',''); pageSizeSel.appendChild(opt); });
+  pageSizeSel.addEventListener('change', () => { const v = parseInt(pageSizeSel.value||String(pageSize), 10) || pageSize; pageSize = v; localStorage.setItem('public.pageSize', String(v)); page = 1; render(); });
+  const pager = el('div', { class:'d-flex align-items-center gap-2' });
+  const viewRow = el('div', { class:'d-flex align-items-center gap-3 mb-2 flex-wrap justify-content-between' },
+    el('div', { class:'d-flex align-items-center gap-3 flex-wrap' }, viewToggle, missingSwitch),
+    el('div', { class:'d-flex align-items-center gap-2' }, pager, pageSizeSel)
+  );
+  const list = el('div', { class: 'row g-3', id:'publicCollectionList' });
+  root.append(hdr, status, filtersRow, viewRow, list);
+  let allItemsOwned = [];
+  let allCardsFull = []; // all cards (for missing merge) loaded lazily
+  function mergedItems(){
+    if (!showMissing) return allItemsOwned.slice();
+    if (!allCardsFull.length) return allItemsOwned.slice();
+    const ownedMap = Object.fromEntries(allItemsOwned.map(it => [String(it.card_id||it.id||''), it]));
+    const out = allCardsFull.map(c => {
+      const id = String(c.id||'');
+      const owned = ownedMap[id];
+      if (owned) return { ...c, card_id: id, qty: owned.qty };
+      return { card_id: id, name: c.name, rarity: c.rarity, set_code: c.set_code, image_url: c.image_url, color: c.color, card_type: c.card_type, qty: 0, _missing: true };
+    });
+    // Ensure deterministic ordering already by name (cardsFull sorted) then keep
+    return out;
+  }
+  function applyFilters(items){
+    const term = q.value.trim().toLowerCase();
+    const r = raritySel.value.trim().toLowerCase();
+    const s = setSel.value.trim().toUpperCase();
+    const c = colorSel.value.trim().toLowerCase();
+    const t = typeSel.value.trim().toLowerCase();
+    return items.filter(it => {
+      if (term && !String(it.name||'').toLowerCase().includes(term) && !String(it.card_id||'').toLowerCase().includes(term)) return false;
+      if (r && String(it.rarity||'').toLowerCase() !== r) return false;
+      if (s && String(it.set_code||'').toUpperCase() !== s) return false;
+      if (c && String(it.color||'').toLowerCase() !== c) return false;
+      if (t && String(it.card_type||'').toLowerCase() !== t) return false;
+      return true;
+    });
+  }
+  function sortByCardNumber(arr){
+    const parse = (it)=>{
+      const id = String(it.card_id || it.id || '');
+      const set = String(it.set_code || '').toUpperCase();
+      let num = 99999; let suf = '';
+      const m = id.match(/-(\d{1,4})([a-z])?$/i);
+      if (m) { num = parseInt(m[1], 10) || 0; suf = (m[2]||'').toLowerCase(); }
+      return { set, num, suf, id };
+    };
+    arr.sort((a,b)=>{
+      const A = parse(a), B = parse(b);
+      if (A.set !== B.set) return A.set < B.set ? -1 : 1;
+      if (A.num !== B.num) return A.num - B.num;
+      if (A.suf !== B.suf) return A.suf < B.suf ? -1 : (A.suf > B.suf ? 1 : 0);
+      return A.id < B.id ? -1 : (A.id > B.id ? 1 : 0);
+    });
+    return arr;
+  }
+  function render(){
+  list.innerHTML='';
+    const filtered = sortByCardNumber(applyFilters(mergedItems()));
+    const total = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (page > totalPages) page = totalPages;
+    const start = (page - 1) * pageSize;
+    const items = filtered.slice(start, start + pageSize);
+    if (currentView === 'list') {
+      const table = el('table', { class:'table table-dark table-striped table-sm mb-0' });
+      const thead = el('thead', {}, el('tr', {},
+        el('th', {}, 'Carte'),
+        el('th', {}, 'ID'),
+        el('th', {}, 'Set'),
+        el('th', {}, 'Rareté'),
+        el('th', {}, 'Qty')
+      ));
+      const tbody = el('tbody');
+      items.forEach(it => {
+  const tr = el('tr', { class:'align-middle' + (it.qty ? '' : ' missing') });
+        const img = el('img', { src: it.image_url||'', alt: it.name||'', style:'height:50px;width:auto;object-fit:cover;border-radius:6px;background:#111;' });
+        tr.append(
+          el('td', {}, img, ' ', el('span', { class:'small fw-semibold' }, it.name||it.card_id||'')),
+          el('td', { class:'small text-muted' }, it.card_id||''),
+          el('td', { class:'small' }, it.set_code||''),
+          el('td', { class:'small' }, (it.rarity||'').toLowerCase()),
+          el('td', { class:'small' }, String(it.qty||0))
+        );
+        tr.addEventListener('click', ()=>{ if (it.card_id) openCardModal({ id: it.card_id, name: it.name, image_url: it.image_url, set_code: it.set_code, rarity: it.rarity }); });
+        tbody.append(tr);
+      });
+      table.append(thead, tbody);
+      list.append(el('div', { class:'col-12' }, table));
+    } else {
+      items.forEach(it => {
+        const img = el('img', { src: it.image_url || '', alt: it.name || '', class: 'img-fluid rounded mb-2', loading: 'lazy', style: 'max-height:160px;object-fit:cover;background:#111;' });
+        const qtyBadge = el('span', { class: 'badge bg-secondary position-absolute top-0 end-0 m-1' }, 'x' + (it.qty||0));
+        const card = el('div', { class: 'card bg-dark text-light position-relative h-100 clickable' + (it.qty ? '' : ' card-missing') },
+          el('div', { class: 'card-body p-2 d-flex flex-column' },
+            el('div', { class: 'flex-grow-1 d-flex justify-content-center align-items-center owned-shine' }, img),
+            el('div', { class: 'small fw-semibold mt-1 text-truncate' }, it.name || it.card_id || ''),
+            el('div', { class: 'small text-muted' }, it.card_id || ''),
+            el('div', { class: 'small text-muted' }, (it.rarity||'').toLowerCase())
+          ),
+          qtyBadge
+        );
+        card.addEventListener('click', () => { if (it.card_id) openCardModal({ id: it.card_id, name: it.name, image_url: it.image_url, set_code: it.set_code, rarity: it.rarity }); });
+        list.append(el('div', { class: 'col-6 col-sm-4 col-md-3 col-lg-2' }, card));
+      });
+    }
+    // Render pager
+    pager.innerHTML = '';
+    pager.append(
+      el('button', { type:'button', class:'btn btn-sm btn-outline-secondary', disabled: page<=1, onclick: ()=>{ page=Math.max(1,page-1); render(); } }, 'Précédent'),
+      el('div', { class:'small text-light', style:'white-space:nowrap' }, `Page ${page} / ${totalPages}`),
+      el('button', { type:'button', class:'btn btn-sm btn-outline-secondary', disabled: page>=totalPages, onclick: ()=>{ page=Math.min(totalPages,page+1); render(); } }, 'Suivant')
+    );
+  }
+  function wire(){
+    const debounce = (fn, wait=300) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; };
+    q.addEventListener('input', debounce(()=>{ page=1; render(); }));
+    [raritySel,setSel,colorSel,typeSel].forEach(sel => sel.addEventListener('change', ()=>{ page=1; render(); }));
+  }
+  wire();
+  async function loadAllCards(){
+    // Paginate through cards.list to get all cards; stop if too many or error
+    let page = 1; const pageSize = 100; let total = null; const accum = [];
+    while (page <= 50) { // hard cap 50 pages (5000 cards)
+      try {
+        const resp = await api.cardsList('', '', '', page, pageSize, '', '');
+        if (resp && Array.isArray(resp.items)) {
+          resp.items.forEach(it => accum.push({ id: it.id, name: it.name, rarity: it.rarity, set_code: it.set_code, image_url: it.image_url, color: it.color, card_type: it.card_type }));
+          total = resp.total;
+          if (accum.length >= total) break;
+        } else { break; }
+      } catch (e) { break; }
+      page++;
+    }
+    // Sort by name for stable order
+    accum.sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+    allCardsFull = accum;
+  }
+  try {
+    const data = await api.collectionPublic(token);
+    allItemsOwned = (data.items||[]);
+    allItemsOwned.sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+    status.textContent = allItemsOwned.length ? ('Total cartes possédées: ' + allItemsOwned.reduce((a,c)=>a+(c.qty?1:0),0)) : 'Aucune carte.';
+    if (showMissing) { try { await loadAllCards(); } catch {} }
+    render();
+  } catch (e) {
+    status.textContent = 'Erreur: ' + (e.message||'');
   }
 });
 
@@ -1475,175 +2188,109 @@ router.register('#/stats', async (root) => {
       )
     );
   } catch (e) {
-    root.append(el('div', { class: 'alert alert-info' }, 'Connectez-vous pour voir vos stats.'));
+    // Non connecté: message puis redirection
+    root.append(el('div', { class: 'alert alert-info' }, 'Connectez-vous pour voir vos stats.'));    
+    setTimeout(() => { location.hash = '#/connexion'; }, 50);
   }
 });
 
 router.register('#/actus', async (root) => {
   root.innerHTML = '';
-  const list = el('div', { class: 'vstack gap-2' });
-  root.append(el('h2', {}, 'Extensions & Événements'), list);
+  const title = el('h2', {}, 'Actualités');
+  const status = el('div', { class: 'small text-muted mb-2', id: 'newsStatus' }, 'Chargement...');
+  const wrap = el('div', { class: 'row g-3', id: 'newsList' });
+  root.append(title, status, wrap);
   try {
-    const data = await api.expansionsList();
-    list.innerHTML = '';
-    data.expansions.forEach(e => {
-      const date = e.released_at ? new Date(e.released_at * 1000).toLocaleDateString('fr-FR') : '—';
-      list.append(el('div', { class: 'card' }, el('div', { class: 'card-body d-flex justify-content-between' }, el('div', {}, el('div', { class: 'h5' }, e.name), el('div', { class: 'text-muted' }, e.code)), el('div', { class: 'text-muted' }, date))));
+    // Fetch published articles
+    const data = await api.articlesList({ page:1, pageSize:50 });
+    const items = (data.items||[]);
+    status.textContent = items.length ? (items.length + ' article' + (items.length>1?'s':'')) : 'Aucun article.';
+    wrap.innerHTML = '';
+    items.forEach(a => {
+      const created = a.created_at ? new Date(a.created_at * 1000).toLocaleDateString('fr-FR') : '';
+      const card = el('div', { class: 'col-md-6 col-lg-4' },
+        el('div', { class: 'card h-100 article-card', 'data-id': a.id },
+          a.image_url ? el('img', { src: a.image_url, alt: a.title || 'visuel', class: 'card-img-top', style:'object-fit:cover;max-height:160px;' }) : null,
+          el('div', { class: 'card-body d-flex flex-column' },
+            el('div', { class: 'h5 mb-1' }, a.title || ''),
+            el('div', { class: 'small text-muted mb-2' }, (a.redacteur?('Par ' + a.redacteur + ' • '):'') + (created || '')),            
+            el('div', { class: 'small text-muted mb-2' }, a.source ? el('a', { href: a.source, target:'_blank', rel:'noopener', class:'text-decoration-none' }, 'Source externe') : ''),
+            el('div', { class: 'mt-auto' }, el('a', { href: '#/article/'+a.id, class: 'btn btn-sm btn-outline-secondary stretched-link' }, 'Lire'))
+          )
+        )
+      );
+      wrap.appendChild(card);
     });
   } catch (e) {
-    list.innerHTML = '<div class="alert alert-danger">Impossible de charger les extensions.</div>';
+    status.textContent = 'Erreur: ' + (e.message||'');
+    wrap.innerHTML = '<div class="col-12"><div class="alert alert-danger">Impossible de charger les actualités.</div></div>';
   }
 });
 
-// Guides index
+// Article detail route (use wildcard to support our simple router)
+router.register('#/article/*', async (root, ctx) => {
+  root.innerHTML='';
+  const id = parseInt((ctx && ctx.parts && ctx.parts[0]) || '', 10);
+  if(!(id>0)){ root.append(el('div',{class:'alert alert-danger'},'Article invalide')); return; }
+  const loading = el('div',{class:'small text-muted mb-2'},'Chargement...');
+  root.append(loading);
+  try {
+    const data = await api.articleDetail(id);
+    if(!data || !data.id){ loading.textContent='Article introuvable.'; return; }
+    root.innerHTML='';
+    const created = data.created_at ? new Date(data.created_at*1000).toLocaleDateString('fr-FR') : '';
+    const wrap = el('article',{class:'card p-3 p-md-4'});
+    const head = el('div',{class:'mb-3'},
+      el('h2',{class:'mb-1'}, data.title||''),
+      data.subtitle ? el('div',{class:'lead mb-2'}, data.subtitle) : null,
+      el('div',{class:'text-muted small'}, (data.redacteur?('Par '+data.redacteur+' • '):'') + created)
+    );
+    const img = data.image_url ? el('img',{src:data.image_url,alt:data.title||'image',class:'rounded mb-3',style:'max-width:100%;height:auto;'}) : null;
+    const body = el('div',{class:'article-body'});
+    // Admin saisit le contenu en HTML via l'éditeur — on l'affiche tel quel
+    body.innerHTML = (data.content||'');
+    wrap.append(head, img, body);
+    if(data.source){ wrap.append(el('div',{class:'mt-3 small'}, 'Source: ', el('a',{href:data.source,target:'_blank',rel:'noopener'}, data.source))); }
+    root.append(wrap);
+  } catch(e){
+    loading.textContent='Erreur: '+(e.message||'');
+  }
+});
+
+// Guides index (dynamic from articles flagged as guide)
 router.register('#/guide', async (root) => {
   root.innerHTML = '';
-  const intro = el('div', { class: 'mb-3 text-muted' }, "Astuces, probabilités et explications pour mieux collectionner et ouvrir vos boosters.");
-  const list = el('div', { class: 'row g-3' });
-  const card = el('div', { class: 'col-md-6 col-lg-4' },
-    el('div', { class: 'card h-100' },
-      el('div', { class: 'card-body d-flex flex-column' },
-        el('div', { class: 'h5' }, 'Taux de drop (Origins)'),
-        el('div', { class: 'text-muted mb-3' }, 'Comprendre les raretés, compositions des boosters et probabilités.'),
-        el('div', { class: 'mt-auto' }, el('a', { class: 'btn btn-sm btn-outline-secondary', href: '#/guide/drop' }, 'Lire le guide'))
-      )
-    )
-  );
-  list.append(card);
-  root.append(el('h2', {}, 'Guide'), intro, list);
+  const title = el('h2', {}, 'Guides');
+  const status = el('div', { class: 'small text-muted mb-2', id: 'guideStatus' }, 'Chargement...');
+  const list = el('div', { class: 'row g-3', id: 'guideList' });
+  root.append(title, status, list);
+  try {
+    const data = await api.articlesList({ page:1, pageSize:50, guide:1 });
+    const items = (data.items||[]);
+    status.textContent = items.length ? (items.length + ' guide' + (items.length>1?'s':'')) : 'Aucun guide.';
+    list.innerHTML = '';
+    items.forEach(a => {
+      const created = a.created_at ? new Date(a.created_at * 1000).toLocaleDateString('fr-FR') : '';
+      list.append(
+        el('div', { class: 'col-md-6 col-lg-4' },
+          el('div', { class: 'card h-100 article-card', 'data-id': a.id },
+            a.image_url ? el('img', { src: a.image_url, alt: a.title || 'visuel', class: 'card-img-top', style:'object-fit:cover;max-height:160px;' }) : null,
+            el('div', { class: 'card-body d-flex flex-column' },
+              el('div', { class: 'h5 mb-1' }, a.title || ''),
+              a.subtitle ? el('div', { class: 'small text-muted mb-1' }, a.subtitle) : null,
+              el('div', { class: 'small text-muted mb-2' }, (a.redacteur?('Par ' + a.redacteur + ' • '):'') + (created || '')),
+              el('div', { class: 'mt-auto' }, el('a', { class: 'btn btn-sm btn-outline-secondary stretched-link', href: '#/article/' + a.id }, 'Lire'))
+            )
+          )
+        )
+      );
+    });
+  } catch (e) {
+    status.textContent = 'Erreur: ' + (e.message||'');
+    list.innerHTML = '<div class="col-12"><div class="alert alert-danger">Impossible de charger les guides.</div></div>';
+  }
 });
 
-// Guide: Taux de drop
-router.register('#/guide/drop', async (root) => {
-  root.innerHTML = '';
-  const wrap = el('article', { class: 'card p-3 p-md-4' });
-  const tags = el('div', { class: 'mb-2 d-flex flex-wrap gap-2' },
-    el('span', { class: 'badge badge-soft' }, 'GUIDE'),
-    el('span', { class: 'badge badge-soft-blue' }, 'TCG'),
-    el('span', { class: 'badge badge-soft-gray' }, 'RIOT'),
-  );
-  const title = el('h2', { class: 'mb-1' }, "Riftbound Origins : Tous les taux de drop, raretés et cartes exclusives à connaître avant d’ouvrir vos boosters !");
-  const meta = el('div', { class: 'text-muted mb-3' }, 'Publié le 30/10/2025 à 21:35 par Léo Girardeau');
-  const intro = el('p', {}, "Découvrez tous les taux de drop et les raretés du JCC Riftbound Origins : communes, rares, épiques, alt-art et cartes signées. Composition des boosters, pull rates et cartes spéciales expliqués.");
-
-  const hr = el('hr');
-  const p1 = el('p', {}, "Les fans de Riftbound: League of Legends Trading Card Game le savent : ouvrir un booster est une expérience unique. Entre l’adrénaline du moment, le plaisir de la collection et la stratégie du deckbuilding, chaque pack promet son lot de surprises.");
-  const p2 = el('p', {}, "Mais que contient exactement un booster ? Quelles sont les différentes raretés, et surtout, quelles sont les chances de tomber sur ces fameuses cartes épiques, alternatives ou signées ? Voici le guide complet pour tout comprendre sur les raretés et taux de drop de Riftbound: Origins.");
-
-  const links = el('ul', {},
-    el('li', {}, el('a', { href: '#/actus' }, 'Riftbound : Les 10 cartes les plus puissantes du set Origins')),
-    el('li', {}, el('a', { href: '#/actus' }, 'Riftbound : Kai’Sa et Master Yi dominent le tournoi national de Shanghai')),
-    el('li', {}, el('a', { href: '#/actus' }, 'Guide du meilleur Deck Sett Midrange sur Riftbound Origins')),
-    el('li', {}, el('a', { href: '#/actus' }, 'Riftbound Spiritforged : Tout ce qu’on sait sur le Set 2 du TCG de Riot Games')),
-  );
-
-  // Composition des boosters
-  const h3comp = el('h3', {}, "Composition d’un booster Riftbound: Origins");
-  const pcomp = el('p', {}, "Chaque booster Riftbound Origins contient 14 cartes au total, réparties comme suit :");
-  const table = (() => {
-    const t = el('table', { class: 'table table-dark table-striped table-bordered table-sm align-middle' });
-    const thead = el('thead', {}, el('tr', {}, el('th', {}, 'Contenu'), el('th', {}, 'Quantité')));
-    const tbody = el('tbody');
-    const rows = [
-      ['Cartes communes', '7'],
-      ['Cartes peu communes', '3'],
-      ['Cartes rares ou mieux', '2'],
-      ['Carte foil (toutes raretés possibles)', '1'],
-      ['Carte Rune ou Token', '1'],
-      ['Insert d’information', '1'],
-    ];
-    rows.forEach(r => tbody.appendChild(el('tr', {}, el('td', {}, r[0]), el('td', {}, r[1]))));
-    t.append(thead, tbody);
-    return t;
-  })();
-  const pcomp2 = el('p', {}, "Chaque pack garantit donc au moins deux cartes rares ou supérieures, et la possibilité de tomber sur des versions foil, alt art, showcase ou signées.");
-
-  // Raretés
-  const h3rar = el('h3', {}, 'Les différentes raretés de Riftbound');
-  const prar = el('p', {}, "Riftbound distingue quatre raretés fonctionnelles, identifiées par la couleur de leur cadre et la forme du gemme de rareté :");
-  const rarTable = (() => {
-    const t = el('table', { class: 'table table-dark table-striped table-bordered table-sm align-middle' });
-    const thead = el('thead', {}, el('tr', {}, el('th', {}, 'Rareté'), el('th', {}, 'Couleur du cadre'), el('th', {}, 'Symbole'), el('th', {}, 'Détails')));
-    const tbody = el('tbody');
-    const rows = [
-      ['Commune', 'Bronze', 'Rond', "Cartes simples, accessibles, essentielles pour la base d’un deck."],
-      ['Peu commune', 'Argenté', 'Triangle', "Effets plus complexes ou synergiques. Inclut les cartes Battlefield."],
-      ['Rare', 'Or avec effet foil', 'Carré', "Cartes puissantes ou emblématiques, dont toutes les Champion Legends."],
-      ['Épique (Epic)', 'Or minimaliste avec finition foil', 'Pentagone', "Les cartes les plus recherchées pour le jeu compétitif."],
-    ];
-    rows.forEach(r => tbody.appendChild(el('tr', {}, el('td', {}, r[0]), el('td', {}, r[1]), el('td', {}, r[2]), el('td', {}, r[3]))));
-    t.append(thead, tbody);
-    return t;
-  })();
-
-  // Taux de drop
-  const h3rate = el('h3', {}, 'Les taux de drop (Pull Rates)');
-  const prate = el('p', {}, "Selon les données officielles de Magical Meta, voici les probabilités d’obtenir chaque rareté dans un pack :");
-  const rateTable = (() => {
-    const t = el('table', { class: 'table table-dark table-striped table-bordered table-sm align-middle' });
-    const thead = el('thead', {}, el('tr', {}, el('th', {}, 'Rareté'), el('th', {}, 'Taux d’apparition'), el('th', {}, 'Moyenne par boîte (24 packs)'), el('th', {}, 'Spécificité')));
-    const tbody = el('tbody');
-    const rows = [
-      ['Commune', '7 par pack', '~168 par boîte', '~2 copies spécifiques par boîte'],
-      ['Peu commune', '3 par pack', '~72 par boîte', '~1 copie spécifique par boîte'],
-      ['Rare', '2 par pack', '~48 par boîte', "~1 copie spécifique toutes les 50 cartes"],
-      ['Épique', '1 toutes les 4 packs', '~6 par boîte', '~1 copie spécifique par case'],
-      ['Alt Art', '1 toutes les 12 packs', '~2 par boîte', '~1 copie spécifique toutes les 2 cases'],
-      ['Showcase', '1 toutes les 72 packs', '~1 toutes les 3 boîtes', '~1 spécifique toutes les 6 cases'],
-      ['Signée', '1 toutes les 720 packs', '~1 toutes les 30 boîtes', 'Ultra rare : ~1 spécifique toutes les 60 cases'],
-    ];
-    rows.forEach(r => tbody.appendChild(el('tr', {}, el('td', {}, r[0]), el('td', {}, r[1]), el('td', {}, r[2]), el('td', {}, r[3]))));
-    t.append(thead, tbody);
-    return t;
-  })();
-  const resumen = el('p', {}, "En résumé, un joueur ouvrant une boîte complète (24 boosters) peut espérer :");
-  const resumenList = el('ul', {},
-    el('li', {}, '6 cartes épiques,'),
-    el('li', {}, '2 alt-art,'),
-    el('li', {}, 'Et, s’il est chanceux, une Showcase ou une carte signée.'),
-  );
-
-  // Cartes spéciales
-  const h3spec = el('h3', {}, 'Les cartes spéciales');
-  const h4alt = el('h4', {}, 'Alt-Art (art alternatif)');
-  const palt = el('p', {}, "Les 12 Champions principaux de Riftbound: Origins disposent chacun d’une version Alt-Art inspirée d’un skin de League of Legends. Ces cartes présentent :");
-  const listAlt = el('ul', {},
-    el('li', {}, 'Un foil spécial,'),
-    el('li', {}, 'Un symbole hexagonal,'),
-    el('li', {}, 'Et une illustration exclusive.'),
-  );
-  const palt2 = el('p', {}, "Elles apparaissent environ 2 fois par boîte, assez rares pour être convoitées, mais assez fréquentes pour enrichir les collections.");
-
-  const h4over = el('h4', {}, 'Overnumbered Cards');
-  const pover = el('p', {}, "Ces cartes « hors série » (numérotées au-delà des 298 cartes de l’extension) reprennent les Champions principaux avec des illustrations signées par les artistes de Riot Games eux-mêmes.");
-  const poverList = el('ul', {},
-    el('li', {}, 'Environ 1 Overnumber toutes les 3 boîtes.'),
-    el('li', {}, 'Environ 1 Signature Overnumber (avec signature foil) toutes les 10 Overnumbers.'),
-  );
-  const pover2 = el('p', {}, "Ces cartes sont non jouables en format compétitif, mais constituent des objets de collection uniques qui ne seront jamais réédités avec le même visuel.");
-
-  const h4foil = el('h4', {}, 'Foil Slot et Runes spéciales');
-  const pfoil = el('p', {}, "Chaque booster contient une carte foil garantie. La plupart du temps, il s’agit d’une Commune ou d’une Uncommon, mais le slot peut être remplacé par :");
-  const pfoilList = el('ul', {},
-    el('li', {}, 'Une Rare ou Épique foil,'),
-    el('li', {}, 'Ou, très rarement, une Rune alternative foil.'),
-  );
-  const pfoil2 = el('p', {}, "Ces Runes peuvent même apparaître dans des versions alt-art, ultra rares et recherchées.");
-
-  const h3philo = el('h3', {}, 'Une philosophie de collection équilibrée');
-  const pphilo = el('p', {}, "L’équipe de Riftbound insiste sur un point : toutes les cartes, même les communes, sont pensées pour être utiles et jouables. Les Rares et Épiques apportent du fun et de la puissance, mais sans déséquilibrer la méta.");
-  const pphilo2 = el('p', {}, "L’objectif : permettre à chaque joueur, même occasionnel, de monter un deck compétitif sans dépenser une fortune, tout en offrant des trésors de collection pour les passionnés.");
-
-  wrap.append(tags, title, meta, intro, hr,
-    p1, p2, links, hr,
-    h3comp, pcomp, table, pcomp2, hr,
-    h3rar, prar, rarTable, hr,
-    h3rate, prate, rateTable, resumen, resumenList, hr,
-    h3spec, h4alt, palt, listAlt, palt2, h4over, pover, poverList, pover2, h4foil, pfoil, pfoilList, pfoil2, hr,
-    h3philo, pphilo, pphilo2
-  );
-  root.append(wrap);
-});
 
 // (Removed duplicate '#/compte' route; merged into the earlier route with admin tools)
 
@@ -1828,6 +2475,48 @@ router.register('#/scan', async (root) => {
 
 // Init
 bootstrapAuthUi();
+
+// Dynamically populate Guide dropdown with guide titles once
+let _guideMenuLoaded = false;
+async function populateGuideMenuOnce() {
+  if (_guideMenuLoaded) return; _guideMenuLoaded = true;
+  const menu = document.getElementById('guideDropdownMenu');
+  if (!menu) return;
+  const loadingItem = document.getElementById('guideDropdownLoading');
+  try {
+    const data = await api.articlesList({ page:1, pageSize:50, guide:1 });
+    const items = (data.items||[]).filter(a => a && a.id);
+    if (loadingItem) loadingItem.parentElement && loadingItem.parentElement.remove();
+    if (!items.length) {
+      const li = document.createElement('li');
+      li.appendChild(el('span', { class:'dropdown-item-text text-muted' }, 'Aucun guide disponible'));
+      menu.appendChild(li);
+      return;
+    }
+    items.forEach(a => {
+      const li = document.createElement('li');
+      const title = a.title || ('Guide #' + a.id);
+      li.appendChild(el('a', { class:'dropdown-item', href:'#/article/' + a.id }, title));
+      menu.appendChild(li);
+    });
+  } catch (e) {
+    if (loadingItem) {
+      loadingItem.textContent = 'Erreur chargement';
+      loadingItem.classList.add('text-danger');
+    }
+  }
+}
+// Trigger when dropdown opens (Bootstrap event) or on navigating to /guide
+document.addEventListener('shown.bs.dropdown', (ev) => {
+  const toggle = ev.target;
+  if (toggle && toggle.matches('.nav-link.dropdown-toggle')) {
+    populateGuideMenuOnce();
+  }
+});
+if (location.hash.startsWith('#/guide')) {
+  // Prefetch early if user lands directly on guide page
+  populateGuideMenuOnce();
+}
 // --- Live price manager (adds "en live" monetary value to each card) ---
 (function () {
   const DEFAULT_ENDPOINT = 'api.php?action=card.price'; // Backend endpoint to resolve a card id to a price
@@ -2038,3 +2727,33 @@ bootstrapAuthUi();
 router.start();
 
 // Logout is wired in bootstrapAuthUi()
+// --- Active navigation gold highlight ---
+function updateActiveNav() {
+  const current = location.hash || '#/';
+  // Clear previous
+  document.querySelectorAll('.navbar .nav-link.active').forEach(a => a.classList.remove('active'));
+  // Longest prefix match among top-level nav links
+  let best = null;
+  document.querySelectorAll('.navbar .nav-link[href^="#/"]').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    if (current.startsWith(href)) {
+      if (!best || href.length > (best.getAttribute('href') || '').length) {
+        best = a;
+      }
+    }
+  });
+  if (best) {
+    best.classList.add('active');
+  } else if (current.startsWith('#/guide')) {
+    // Group: Guide (any sous-route /guide/*) -> highlight dropdown toggle
+    const guideToggle = document.querySelector('.navbar .nav-link.dropdown-toggle');
+    if (guideToggle) guideToggle.classList.add('active');
+  }
+  // Also set active on the matching dropdown item when inside an open menu
+  document.querySelectorAll('.navbar .dropdown-item.active').forEach(a => a.classList.remove('active'));
+  const dd = document.querySelector(`.navbar .dropdown-item[href="${CSS.escape(current)}"]`);
+  if (dd) dd.classList.add('active');
+}
+window.addEventListener('hashchange', updateActiveNav);
+// Initial
+updateActiveNav();

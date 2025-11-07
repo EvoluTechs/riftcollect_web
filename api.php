@@ -188,6 +188,26 @@ try {
             $data = Database::cardsList($q, $rarity, $set, $page, $pageSize, $color, $ctype);
             json_ok($data);
 
+        case 'admin.cards.update':
+            // Admin-only endpoint to update card metadata quickly (price, rarity, name, etc.)
+            try { Auth::requireAdmin(); } catch (\Throwable $e) { json_error('Accès administrateur requis', 403); }
+            if ($method !== 'POST') json_error('Méthode non autorisée', 405);
+            $id = trim($_POST['id'] ?? '');
+            if ($id === '') json_error('Paramètre id manquant');
+            $changes = [];
+            $fields = ['name','rarity','price','color','card_type','description','image_url','set_code'];
+            foreach ($fields as $f) {
+                if (array_key_exists($f, $_POST)) {
+                    $val = $_POST[$f];
+                    if ($f === 'price') { $val = ($val === '' ? null : (float)$val); }
+                    $changes[$f] = $val;
+                }
+            }
+            if (!$changes) json_error('Aucun champ à mettre à jour');
+            $ok = Database::updateCardMeta($id, $changes);
+            if (!$ok) json_error('Mise à jour échouée', 500);
+            json_ok(['updated' => true]);
+
         case 'cards.refresh':
             // Admin only
             try { Auth::requireAdmin(); } catch (\Throwable $e) { json_error('Accès administrateur requis', 403); }
@@ -201,6 +221,69 @@ try {
             $card = Database::cardDetail($id, $locale);
             if (!$card) json_error('Carte introuvable', 404);
             json_ok($card);
+
+        case 'articles.create':
+            try { Auth::requireAdmin(); } catch (\Throwable $e) { json_error('Accès administrateur requis', 403); }
+            if ($method !== 'POST') json_error('Méthode non autorisée', 405);
+            $title = trim($_POST['title'] ?? '');
+            $content = (string)($_POST['content'] ?? '');
+            $published = (isset($_POST['published']) && (int)$_POST['published'] == 1);
+            $redacteur = trim((string)($_POST['redacteur'] ?? '')) ?: null;
+            $source = trim((string)($_POST['source'] ?? '')) ?: null;
+            $imageUrl = trim((string)($_POST['image_url'] ?? '')) ?: null;
+            $subtitle = trim((string)($_POST['subtitle'] ?? '')) ?: null;
+            $createdAt = isset($_POST['created_at']) ? (int)$_POST['created_at'] : null;
+            $isGuide = isset($_POST['is_guide']) ? ((int)$_POST['is_guide'] == 1) : false;
+            if ($title === '') json_error('Titre requis');
+            $u = Auth::user();
+            $res = Database::createArticle($title, $content, (int)$u['id'], $published, $redacteur, $source, $imageUrl, $subtitle, $createdAt, $isGuide);
+            json_ok($res);
+
+        case 'articles.update':
+            try { Auth::requireAdmin(); } catch (\Throwable $e) { json_error('Accès administrateur requis', 403); }
+            if ($method !== 'POST') json_error('Méthode non autorisée', 405);
+            $id = (int)($_POST['id'] ?? 0);
+            if ($id <= 0) json_error('id invalide');
+            $fields = [];
+            if (isset($_POST['title'])) $fields['title'] = (string)$_POST['title'];
+            if (isset($_POST['content'])) $fields['content'] = (string)$_POST['content'];
+            if (isset($_POST['subtitle'])) $fields['subtitle'] = (trim((string)$_POST['subtitle']) ?: null);
+            if (isset($_POST['published'])) $fields['published'] = ((int)$_POST['published'] == 1);
+            if (isset($_POST['is_guide'])) $fields['is_guide'] = ((int)$_POST['is_guide'] == 1);
+            if (isset($_POST['redacteur'])) $fields['redacteur'] = (trim((string)$_POST['redacteur']) ?: null);
+            if (isset($_POST['source'])) $fields['source'] = (trim((string)$_POST['source']) ?: null);
+            if (isset($_POST['image_url'])) $fields['image_url'] = (trim((string)$_POST['image_url']) ?: null);
+            if (isset($_POST['created_at'])) $fields['created_at'] = (int)$_POST['created_at'];
+            if (!$fields) json_error('Aucun champ');
+            $ok = Database::updateArticle($id, $fields);
+            if (!$ok) json_error('Echec mise à jour');
+            json_ok(['updated' => true]);
+
+        case 'articles.delete':
+            try { Auth::requireAdmin(); } catch (\Throwable $e) { json_error('Accès administrateur requis', 403); }
+            if ($method !== 'POST') json_error('Méthode non autorisée', 405);
+            $id = (int)($_POST['id'] ?? 0);
+            if ($id <= 0) json_error('id invalide');
+            $ok = Database::deleteArticle($id);
+            if (!$ok) json_error('Suppression échouée');
+            json_ok(['deleted' => true]);
+
+        case 'articles.list':
+            $page = max(1, (int)($_GET['page'] ?? 1));
+            $pageSize = max(1, min(100, (int)($_GET['pageSize'] ?? 20)));
+            $includeDrafts = false;
+            if (Auth::isAdmin()) { $includeDrafts = (isset($_GET['all']) && (int)$_GET['all'] == 1); }
+            $guideOnly = (isset($_GET['guide']) && (int)$_GET['guide'] == 1);
+            $res = Database::listArticles($page, $pageSize, $includeDrafts, $guideOnly);
+            json_ok($res);
+
+        case 'articles.detail':
+            $id = (int)($_GET['id'] ?? 0);
+            if ($id <= 0) json_error('id invalide');
+            $includeDrafts = Auth::isAdmin();
+            $row = Database::getArticle($id, $includeDrafts);
+            if (!$row) json_error('Article introuvable', 404);
+            json_ok($row);
 
         case 'cards.matchImage':
             // Compare a provided image (data URL or URL) against local card thumbnails using dHash
@@ -425,6 +508,15 @@ try {
             $items = Database::collectionGet($u['id']);
             json_ok(['items' => $items]);
 
+        case 'collection.public':
+            // Read-only access by share token
+            $token = trim((string)($_GET['token'] ?? ''));
+            if ($token === '') json_error('token manquant', 400);
+            $uid = Database::userIdByShareToken($token);
+            if (!$uid) json_error('Lien invalide ou désactivé', 404);
+            $items = Database::collectionGet($uid);
+            json_ok(['items' => $items]);
+
         case 'collection.set':
             $u = Auth::requireUser();
             if ($method !== 'POST') json_error('Méthode non autorisée', 405);
@@ -491,6 +583,32 @@ try {
             $enabled = (int)($_POST['enabled'] ?? 1) ? 1 : 0;
             Database::subscriptionSet($u['id'], $enabled);
             json_ok(['notifications' => $enabled === 1]);
+
+        case 'share.info':
+            $u = Auth::requireUser();
+            $info = Database::userShareInfo($u['id']);
+            $shareUrl = null;
+            if ($info['enabled'] && !empty($info['token'])) {
+                $base = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? '');
+                $path = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
+                $basePath = $path === '' ? '' : $path;
+                $shareUrl = $base . $basePath . '/#/p/' . rawurlencode($info['token']);
+            }
+            json_ok(['enabled' => $info['enabled'], 'token' => $info['token'], 'url' => $shareUrl]);
+
+        case 'share.set':
+            $u = Auth::requireUser();
+            if ($method !== 'POST') json_error('Méthode non autorisée', 405);
+            $enabled = (int)($_POST['enabled'] ?? 1) ? 1 : 0;
+            $info = Database::userShareSet($u['id'], $enabled);
+            $shareUrl = null;
+            if ($info['enabled'] && !empty($info['token'])) {
+                $base = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? '');
+                $path = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
+                $basePath = $path === '' ? '' : $path;
+                $shareUrl = $base . $basePath . '/#/p/' . rawurlencode($info['token']);
+            }
+            json_ok(['enabled' => $info['enabled'], 'token' => $info['token'], 'url' => $shareUrl]);
 
         default:
             json_error('Action inconnue', 404, ['action' => $action]);
