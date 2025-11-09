@@ -63,10 +63,22 @@ function el(tag, attrs = {}, ...children) {
   });
   children.forEach(c => {
     if (c == null) return;
-    if (typeof c === 'string') {
-      e.appendChild(document.createTextNode(c));
-    } else {
+    // Accept strings and numbers directly
+    if (typeof c === 'string' || typeof c === 'number') {
+      e.appendChild(document.createTextNode(String(c)));
+      return;
+    }
+    // If an array slipped through, append its items
+    if (Array.isArray(c)) {
+      c.forEach(ci => { if (ci != null) { if (typeof ci === 'string' || typeof ci === 'number') e.appendChild(document.createTextNode(String(ci))); else if (ci instanceof Node) e.appendChild(ci); }});
+      return;
+    }
+    // Only append DOM Nodes
+    if (c instanceof Node) {
       e.appendChild(c);
+    } else {
+      // Fallback: coerce to text to avoid runtime crashes
+      try { e.appendChild(document.createTextNode(String(c))); } catch {}
     }
   });
   return e;
@@ -1330,7 +1342,7 @@ router.register('#/cartes', async (root) => {
   let rarityIconMap = {}; // key -> url
   function rarityIcon(key, size='sm') {
     const k = (key||'').toLowerCase();
-    const url = rarityIconMap[k] || (k ? ('assets/img/rarity/' + k + '.webp') : null);
+    const url = rarityIconMap[k] || (k ? ('assets/img/rarity/' + k + '.svg') : null);
     return url ? iconImg(url, k, size) : null;
   }
   let selectedRarity = '';
@@ -1389,7 +1401,6 @@ router.register('#/cartes', async (root) => {
     { key: 'champion', label: 'Champion' },
     { key: 'battlefield', label: 'Battlefield' },
     { key: 'gear', label: 'Gear' },
-    { key: 'legend', label: 'Legend' },
     { key: 'rune', label: 'Rune' },
     { key: 'token', label: 'Token' },
   ];
@@ -1449,6 +1460,9 @@ router.register('#/cartes', async (root) => {
     } catch {}
   }
   let loadSeq = 0;
+  // Sorting
+  const rarityOrder = ['common','uncommon','rare','epic','legendary','overnumbered'];
+  let currentSort = localStorage.getItem('cards.sort') || '';
   async function load() {
     const seq = ++loadSeq;
     results.innerHTML = 'Chargement…';
@@ -1457,6 +1471,32 @@ router.register('#/cartes', async (root) => {
   const data = await api.cardsList(q.value.trim(), selectedRarity, set.value.trim(), page, ps, selectedColor, selectedType);
       if (seq !== loadSeq) return; // stale response, ignore
       results.innerHTML = '';
+      // Apply sorting if requested
+      if (currentSort) {
+        const sortNumParts = (id) => {
+          const m = String(id||'').match(/-(\d{1,4})([a-z])?$/i);
+          return m ? { num: parseInt(m[1],10)||0, suf: (m[2]||'').toLowerCase() } : { num: 99999, suf: '' };
+        };
+        const cmpRarity = (a,b) => {
+          const ra = rarityOrder.indexOf(String(a.rarity||'').toLowerCase());
+          const rb = rarityOrder.indexOf(String(b.rarity||'').toLowerCase());
+          return (ra<0?999:ra) - (rb<0?999:rb);
+        };
+        data.items.sort((a,b) => {
+          if (currentSort === 'priceAsc' || currentSort === 'priceDesc') {
+            const pa = Number(a.price||0); const pb = Number(b.price||0);
+            if (pa !== pb) return currentSort==='priceAsc' ? pa-pb : pb-pa;
+          } else if (currentSort === 'rarityAsc' || currentSort === 'rarityDesc') {
+            const cr = cmpRarity(a,b);
+            if (cr !== 0) return currentSort==='rarityAsc' ? cr : -cr;
+          }
+          // Default: by numeric part of ID then suffix then full id
+          const A = sortNumParts(a.id); const B = sortNumParts(b.id);
+          if (A.num !== B.num) return A.num - B.num;
+          if (A.suf !== B.suf) return A.suf < B.suf ? -1 : 1;
+          return String(a.id||'').localeCompare(String(b.id||''));
+        });
+      }
       if (viewMode === 'list') {
         const table = el('table', { class: 'table table-dark table-striped align-middle table-hover' });
         const thead = el('thead', {}, el('tr', {},
@@ -1505,6 +1545,12 @@ router.register('#/cartes', async (root) => {
           const oci = colorIcon(card.color, 'sm'); if (oci) topRow.appendChild(el('div', { class: 'icon-pill' }, oci));
           const oti = typeIcon(card.card_type, 'sm'); if (oti) topRow.appendChild(el('div', { class: 'icon-pill' }, oti));
           const idBadge = el('div', { class: 'card-id-badge' }, '#' + (card.id || '').toUpperCase());
+          // Price badge if DB price available (>0)
+          let priceBadge = null;
+          const rawPrice = Number(card.price || 0);
+          if (!isNaN(rawPrice) && rawPrice > 0) {
+            priceBadge = el('span', { class: 'live-price-badge static-price', title: 'Source : CardMarket' }, rawPrice.toFixed(2) + '€');
+          }
           let qtyInput;
           const qtyCtrl = isLogged ? el('div', { class: 'qty-ctrl' },
             el('button', { class: 'btn btn-sm btn-outline-secondary', onclick: async (ev) => { ev.stopPropagation(); const n = Math.max(0, (qtyMap[card.id]||0) - 1); await api.collectionSet(card.id, n); qtyMap[card.id] = n; qtyInput.value = n; if (n>0) owned.add(card.id); else owned.delete(card.id); } }, '−'),
@@ -1515,10 +1561,12 @@ router.register('#/cartes', async (root) => {
           const tileChildren = [];
           if (topRow.childNodes.length) tileChildren.push(topRow);
           tileChildren.push(imgWrap, footer);
+          if (priceBadge) tileChildren.push(priceBadge);
           const tile = el('div', {
             class: 'card h-100 card-tile clickable',
             onclick: () => openCardModal(card),
             'data-card-key': card.id || '',
+            ...(rawPrice>0 ? { 'data-card-price': String(rawPrice) } : {}),
             'data-card-name': card.name || '',
             'data-card-set': card.set_code || '',
             'data-card-rarity': (card.rarity || '').toLowerCase()
@@ -1539,12 +1587,33 @@ router.register('#/cartes', async (root) => {
       results.innerHTML = '<div class="alert alert-danger">' + (e.message || 'Erreur') + '</div>';
     }
   }
+  // Sorting dropdown redesigned like other icon dropdowns
+  function makeSortDropdown(initial) {
+    const options = [
+      { key: '', label: 'Numéro (par défaut)' },
+      { key: 'priceAsc', label: 'Prix ↑' },
+      { key: 'priceDesc', label: 'Prix ↓' },
+      { key: 'rarityAsc', label: 'Rareté ↑' },
+      { key: 'rarityDesc', label: 'Rareté ↓' }
+    ];
+    function iconFor(k) {
+      const span = document.createElement('span');
+      span.className = 'sort-icon d-inline-flex align-items-center justify-content-center';
+      span.style.cssText = 'width:18px;height:18px;font-size:11px;font-weight:600;background:#111;border-radius:4px;';
+      span.textContent = (k==='priceAsc')?'↑€':(k==='priceDesc')?'↓€':(k==='rarityAsc')?'↑R':(k==='rarityDesc')?'↓R':'#';
+      return span;
+    }
+    return makeIconDropdown('Tri', options, iconFor, (key) => { currentSort = key; localStorage.setItem('cards.sort', currentSort); page = 1; load(); });
+  }
+  const sortDd = makeSortDropdown(currentSort);
+  sortDd.setSelected(currentSort || '');
   const searchBar = el('div', { class: 'row g-2' },
-    el('div', { class: 'col-12 col-md-4 col-lg-4' }, q),
-  el('div', { class: 'col-6 col-md-2 col-lg-2' }, rarityDd.root),
+    el('div', { class: 'col-12 col-md-3 col-lg-3' }, q),
+    el('div', { class: 'col-6 col-md-2 col-lg-2' }, rarityDd.root),
     el('div', { class: 'col-6 col-md-2 col-lg-2' }, set),
     el('div', { class: 'col-6 col-md-2 col-lg-2' }, colorDd.root),
-    el('div', { class: 'col-6 col-md-2 col-lg-2' }, typeDd.root)
+    el('div', { class: 'col-6 col-md-2 col-lg-2' }, typeDd.root),
+    el('div', { class: 'col-6 col-md-1 col-lg-1' }, sortDd.root)
   );
   const viewBar = el('div', { class: 'd-flex align-items-center mt-2 mb-1' }, viewToggle.root);
   const actions = el('div', { class: 'd-flex justify-content-between align-items-center mt-3' });
@@ -1570,8 +1639,27 @@ router.register('#/compte', async (root) => {
   );
   const info = el('div', { class: 'card mb-3' },
     el('div', { class: 'card-body' },
-      el('div', { class: 'mb-1' }, 'Email: ', el('strong', {}, me.email || '')),
-      el('div', { class: 'text-muted small' }, me.is_admin ? 'Rôle: Administrateur' : 'Rôle: Utilisateur')
+      el('div', { class: 'row g-2 align-items-end' },
+        el('div', { class: 'col-12 col-md-6' },
+          el('label', { class: 'form-label small text-muted' }, 'Nom affiché'),
+          (function(){
+            const group = el('div', { class: 'input-group' });
+            const inp = el('input', { class: 'form-control', type: 'text', placeholder: 'Votre nom', value: (me.name||'') });
+            const btn = el('button', { class: 'btn btn-outline-secondary' }, 'Enregistrer');
+            btn.addEventListener('click', async () => {
+              const v = (inp.value||'').trim();
+              try { await api.userSetName(v); toast('Nom mis à jour'); }
+              catch(e){ toast('Erreur: ' + (e.message||''), true); }
+            });
+            group.append(inp, btn); return group;
+          })()
+        ),
+        el('div', { class: 'col-12 col-md-6' },
+          el('label', { class: 'form-label small text-muted d-block' }, 'Email'),
+          el('div', { class: 'fw-semibold' }, me.email || '')
+        )
+      ),
+      el('div', { class: 'text-muted small mt-2' }, me.is_admin ? 'Rôle: Administrateur' : 'Rôle: Utilisateur')
     )
   );
   // Notifications toggle
@@ -1690,9 +1778,9 @@ router.register('#/collection', async (root) => {
     const pageSizeSel = el('select', { class: 'form-select form-select-sm', title: 'Résultats par page', 'aria-label': 'Résultats par page', style: 'width:90px' });
     allowedPageSizes.forEach(n => { const opt = el('option', { value: String(n) }, String(n)); if (n === savedPs) opt.setAttribute('selected',''); pageSizeSel.appendChild(opt); });
     pageSizeSel.addEventListener('change', () => { const v = parseInt(pageSizeSel.value||'30', 10)||30; localStorage.setItem('collection.pageSize', String(v)); page = 1; render(); });
-    function rarityLabelFromKey(k) { const m = { common:'Commune', uncommon:'Peu commune', rare:'Rare', epic:'Épique', legendary:'Légendaire' }; return m[(k||'').toLowerCase()] || (k ? (k.charAt(0).toUpperCase()+k.slice(1)) : 'Toutes raretés'); }
+  function rarityLabelFromKey(k) { const m = { common:'Commune', uncommon:'Peu commune', rare:'Rare', epic:'Épique', legendary:'Légendaire', overnumbered:'Overnumbered' }; return m[(k||'').toLowerCase()] || (k ? (k.charAt(0).toUpperCase()+k.slice(1)) : 'Toutes raretés'); }
     let rarityIconMap = {};
-    function rarityIcon(key, size='sm') { const k=(key||'').toLowerCase(); const url=rarityIconMap[k] || (k ? ('assets/img/rarity/'+k+'.webp') : null); return url ? iconImg(url, k, size) : null; }
+  function rarityIcon(key, size='sm') { const k=(key||'').toLowerCase(); const url=rarityIconMap[k] || (k ? ('assets/img/rarity/'+k+'.svg') : null); return url ? iconImg(url, k, size) : null; }
     let selectedRarity = '';
     function makeIconDropdown(title, options, getIconFn, onChange) {
       const wrap = el('div', { class: 'dropdown w-100' });
@@ -1705,8 +1793,8 @@ router.register('#/collection', async (root) => {
     const rarityDd = makeIconDropdown('Rareté', [{ key:'', label:'Toutes raretés'}], rarityIcon, (key)=>{ selectedRarity=key; page=1; render(); });
     rarityDd.setSelected('');
     try { const data = await api.rarityIcons(); const icons=(data.icons||[]); rarityIconMap=Object.fromEntries(icons.map(it=>[String(it.key).toLowerCase(), it.url])); const opts=[{ key:'', label:'Toutes raretés'}].concat(icons.map(it=>({ key:it.key, label:rarityLabelFromKey(it.key)}))); const rebuilt = makeIconDropdown('Rareté', opts, rarityIcon, (key)=>{ selectedRarity=key; page=1; render(); }); rarityDd.root.replaceWith(rebuilt.root); rebuilt.setSelected(''); rarityDd.root=rebuilt.root; } catch {}
-    const colors = [ { key:'', label:'Toutes couleurs' }, { key:'body', label:'Body' }, { key:'calm', label:'Calm' }, { key:'chaos', label:'Chaos' }, { key:'colorless', label:'Incolore' }, { key:'fury', label:'Fury' }, { key:'mind', label:'Mind' }, { key:'order', label:'Order' } ];
-    const types = [ { key:'', label:'Tous types' }, { key:'unit', label:'Unit' }, { key:'spell', label:'Spell' }, { key:'champion', label:'Champion' }, { key:'battlefield', label:'Battlefield' }, { key:'gear', label:'Gear' }, { key:'legend', label:'Legend' }, { key:'rune', label:'Rune' }, { key:'token', label:'Token' } ];
+  const colors = [ { key:'', label:'Toutes couleurs' }, { key:'body', label:'Body' }, { key:'calm', label:'Calm' }, { key:'chaos', label:'Chaos' }, { key:'colorless', label:'Incolore' }, { key:'fury', label:'Fury' }, { key:'mind', label:'Mind' }, { key:'order', label:'Order' } ];
+  const types = [ { key:'', label:'Tous types' }, { key:'unit', label:'Unit' }, { key:'spell', label:'Spell' }, { key:'champion', label:'Champion' }, { key:'battlefield', label:'Battlefield' }, { key:'gear', label:'Gear' }, { key:'rune', label:'Rune' }, { key:'token', label:'Token' } ];
     let selectedColor=''; let selectedType='';
     const colorDd = makeIconDropdown('Couleur', colors, colorIcon, (key)=>{ selectedColor=key; page=1; render(); });
     const typeDd = makeIconDropdown('Type', types, typeIcon, (key)=>{ selectedType=key; page=1; render(); });
@@ -1811,9 +1899,36 @@ router.register('#/collection', async (root) => {
         return true;
       });
     }
+    // Sorting state
+    const rarityOrder = ['common','uncommon','rare','epic','legendary','overnumbered'];
+    let currentSort = localStorage.getItem('collection.sort') || '';
     function render() {
       const ps = parseInt(pageSizeSel.value||'30', 10) || 30;
-      const filtered = applyFilters(allItems);
+      const filtered = applyFilters(allItems).slice();
+      if (currentSort) {
+        const sortNumParts = (id) => {
+          const m = String(id||'').match(/-(\d{1,4})([a-z])?$/i);
+          return m ? { num: parseInt(m[1],10)||0, suf: (m[2]||'').toLowerCase() } : { num: 99999, suf: '' };
+        };
+        const cmpRarity = (a,b) => {
+          const ra = rarityOrder.indexOf(String(a.rarity||'').toLowerCase());
+          const rb = rarityOrder.indexOf(String(b.rarity||'').toLowerCase());
+          return (ra<0?999:ra) - (rb<0?999:rb);
+        };
+        filtered.sort((a,b) => {
+          if (currentSort === 'priceAsc' || currentSort === 'priceDesc') {
+            const pa = Number(a.price||0); const pb = Number(b.price||0);
+            if (pa !== pb) return currentSort==='priceAsc' ? pa-pb : pb-pa;
+          } else if (currentSort === 'rarityAsc' || currentSort === 'rarityDesc') {
+            const cr = cmpRarity(a,b);
+            if (cr !== 0) return currentSort==='rarityAsc' ? cr : -cr;
+          }
+          const A = sortNumParts(a.card_id||a.id); const B = sortNumParts(b.card_id||b.id);
+          if (A.num !== B.num) return A.num - B.num;
+          if (A.suf !== B.suf) return A.suf < B.suf ? -1 : 1;
+          return String((a.card_id||a.id)||'').localeCompare(String((b.card_id||b.id)||''));
+        });
+      }
       const total = filtered.length; const totalPages = Math.max(1, Math.ceil(total / ps));
       if (page > totalPages) page = totalPages;
       list.innerHTML='';
@@ -1830,7 +1945,7 @@ router.register('#/collection', async (root) => {
           el('th', { class:'text-end', style:'width:160px' }, 'Qté')
         ));
         const tbody = el('tbody');
-        filtered.slice((page-1)*ps, (page)*ps).forEach(it => {
+  filtered.slice((page-1)*ps, (page)*ps).forEach(it => {
           const tr = el('tr', { class:'clickable', onclick: () => openCardModal(it) });
           const img = el('img', { src: it.image_url || 'assets/img/card-placeholder.svg', alt: it.name, loading:'lazy', decoding:'async', style:'width:56px; height:auto; border-radius:.25rem' });
           let qtyInput;
@@ -1857,28 +1972,30 @@ router.register('#/collection', async (root) => {
         });
         table.append(thead, tbody); list.append(table);
       } else {
-        filtered.slice((page-1)*ps, (page)*ps).forEach(it => {
-        const qtyInput = (() => { const inp = el('input', { type:'number', min:'0', value: it.qty||0, class:'form-control text-center' }); inp.addEventListener('click', ev => ev.stopPropagation()); return inp; })();
-        const imgWrap = el('div', { class:'card-img-wrapper', onclick:(ev)=>{ ev.stopPropagation(); openCardModal(it); } }, el('img', { src: it.image_url || 'assets/img/card-placeholder.svg', alt: it.name, loading:'lazy', decoding:'async' }));
-        const idBadge = el('div', { class:'card-id-badge' }, '#' + ((it.card_id || it.id || '')).toUpperCase());
-        const topRow = el('div', { class:'top-icon-row' });
-        const oci = colorIcon(it.color, 'sm'); if (oci) topRow.appendChild(el('div', { class:'icon-pill' }, oci));
-        const oti = typeIcon(it.card_type, 'sm'); if (oti) topRow.appendChild(el('div', { class:'icon-pill' }, oti));
-        const qtyCtrl = el('div', { class:'qty-ctrl' },
-          el('button', { class:'btn btn-sm btn-outline-secondary', onclick: async (ev)=>{ ev.stopPropagation(); const n=Math.max(0,(it.qty||0)-1); await api.collectionSet(it.card_id, n); it.qty=n; qtyInput.value=n; if(n===0){ allItems = allItems.filter(x => x.card_id !== it.card_id); render(); } } }, '−'),
-          qtyInput,
-          el('button', { class:'btn btn-sm btn-outline-secondary', onclick: async (ev)=>{ ev.stopPropagation(); const n=(it.qty||0)+1; await api.collectionSet(it.card_id, n); it.qty=n; qtyInput.value=n; } }, '+')
-        );
-        const footer = el('div', { class:'card-footer-bar', onclick:(ev)=>{ ev.stopPropagation(); } }, idBadge, qtyCtrl);
-        const trash = el('button', { class:'corner-trash', title:'Retirer (Alt/Ctrl: tout retirer)', onclick: async (ev)=>{
-          ev.stopPropagation();
-          try { const full = !!(ev.altKey || ev.ctrlKey || ev.shiftKey); const next = full ? 0 : Math.max(0,(it.qty||0)-1); await api.collectionSet(it.card_id, next); it.qty = next; qtyInput.value = next; toast(full ? 'Carte retirée de la collection' : ('Quantité mise à jour: '+next)); if (next === 0){ allItems = allItems.filter(x => x.card_id !== it.card_id); render(); } }
-          catch(e){ toast('Erreur: '+(e.message||''), true); }
-        } }, (function(){ const s=document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 16 16'); s.innerHTML='<path fill="currentColor" d="M6.5 1a1 1 0 0 0-1 1H3a.5.5 0 0 0 0 1h10a.5.5 0 0 0 0-1h-2.5a1 1 0 0 0-1-1h-3ZM4.118 5.5l.427 7.67A2 2 0 0 0 6.538 15h2.924a2 2 0 0 0 1.993-1.83l.427-7.67H4.118ZM5 5.5h6l-.42 7.545a1 1 0 0 1-.997.955H6.538a1 1 0 0 1-.997-.955L5 5.5Zm2 .5a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5A.5.5 0 0 1 7 6Zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5Z"/>'; return s; })());
-        const children = []; if (topRow.childNodes.length) children.push(topRow); children.push(imgWrap, footer, trash);
+  filtered.slice((page-1)*ps, (page)*ps).forEach(it => {
+          const qtyInput = (() => { const inp = el('input', { type:'number', min:'0', value: it.qty||0, class:'form-control text-center' }); inp.addEventListener('click', ev => ev.stopPropagation()); return inp; })();
+          const imgWrap = el('div', { class:'card-img-wrapper', onclick:(ev)=>{ ev.stopPropagation(); openCardModal(it); } }, el('img', { src: it.image_url || 'assets/img/card-placeholder.svg', alt: it.name, loading:'lazy', decoding:'async' }));
+          const idBadge = el('div', { class:'card-id-badge' }, '#' + ((it.card_id || it.id || '')).toUpperCase());
+          const topRow = el('div', { class:'top-icon-row' });
+          const oci = colorIcon(it.color, 'sm'); if (oci) topRow.appendChild(el('div', { class:'icon-pill' }, oci));
+          const oti = typeIcon(it.card_type, 'sm'); if (oti) topRow.appendChild(el('div', { class:'icon-pill' }, oti));
+    let priceBadge = null; const rawPrice = Number(it.price||0); if (!isNaN(rawPrice) && rawPrice>0) { priceBadge = el('span', { class:'live-price-badge static-price', title:'Source : CardMarket' }, rawPrice.toFixed(2)+'€'); }
+          const trashBtn = el('button', { class:'btn btn-sm btn-outline-danger', title:'Retirer (Alt/Ctrl: tout retirer)', onclick: async (ev)=>{
+            ev.stopPropagation();
+            try { const full = !!(ev.altKey || ev.ctrlKey || ev.shiftKey); const next = full ? 0 : Math.max(0,(it.qty||0)-1); await api.collectionSet(it.card_id, next); it.qty = next; qtyInput.value = next; toast(full ? 'Carte retirée de la collection' : ('Quantité mise à jour: '+next)); if (next === 0){ allItems = allItems.filter(x => x.card_id !== it.card_id); render(); } }
+            catch(e){ toast('Erreur: '+(e.message||''), true); }
+          } }, (function(){ const s=document.createElementNS('http://www.w3.org/2000/svg','svg'); s.setAttribute('viewBox','0 0 16 16'); s.style.width='1em'; s.style.height='1em'; s.innerHTML='<path fill="currentColor" d="M6.5 1a1 1 0 0 0-1 1H3a.5.5 0 0 0 0 1h10a.5.5 0 0 0 0-1h-2.5a1 1 0 0 0-1-1h-3ZM4.118 5.5l.427 7.67A2 2 0 0 0 6.538 15h2.924a2 2 0 0 0 1.993-1.83l.427-7.67H4.118ZM5 5.5h6l-.42 7.545a1 1 0 0 1-.997.955H6.538a1 1 0 0 1-.997-.955L5 5.5Zm2 .5a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5A.5.5 0 0 1 7 6Zm3 0a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5Z"/>'; return s; })());
+          const qtyCtrl = el('div', { class:'qty-ctrl d-flex align-items-center gap-1' },
+            el('button', { class:'btn btn-sm btn-outline-secondary', onclick: async (ev)=>{ ev.stopPropagation(); const n=Math.max(0,(it.qty||0)-1); await api.collectionSet(it.card_id, n); it.qty=n; qtyInput.value=n; if(n===0){ allItems = allItems.filter(x => x.card_id !== it.card_id); render(); } } }, '−'),
+            qtyInput,
+            el('button', { class:'btn btn-sm btn-outline-secondary', onclick: async (ev)=>{ ev.stopPropagation(); const n=(it.qty||0)+1; await api.collectionSet(it.card_id, n); it.qty=n; qtyInput.value=n; } }, '+'),
+            trashBtn
+          );
+          const footer = el('div', { class:'card-footer-bar d-flex justify-content-between align-items-center', onclick:(ev)=>{ ev.stopPropagation(); } }, idBadge, qtyCtrl);
+          const children = []; if (topRow.childNodes.length) children.push(topRow); children.push(imgWrap, footer); if (priceBadge) children.push(priceBadge);
           const classes = 'card h-100 clickable position-relative card-tile' + ((it.qty||0)===0 ? ' card-missing' : '');
           const card = el('div', { class: classes, onclick: ()=>openCardModal(it) }, ...children);
-        list.append(el('div', { class:'col-12 col-sm-6 col-md-4 col-lg-5ths' }, card));
+          list.append(el('div', { class:'col-12 col-sm-6 col-md-4 col-lg-5ths' }, card));
         });
       }
       pager.innerHTML='';
@@ -1889,12 +2006,33 @@ router.register('#/collection', async (root) => {
       );
     }
     // Barre de recherche/filtres
+    // Sorting dropdown redesigned like other icon dropdowns
+    function makeSortDropdownC(initial) {
+      const options = [
+        { key: '', label: 'Numéro (par défaut)' },
+        { key: 'priceAsc', label: 'Prix ↑' },
+        { key: 'priceDesc', label: 'Prix ↓' },
+        { key: 'rarityAsc', label: 'Rareté ↑' },
+        { key: 'rarityDesc', label: 'Rareté ↓' }
+      ];
+      function iconFor(k) {
+        const span = document.createElement('span');
+        span.className = 'sort-icon d-inline-flex align-items-center justify-content-center';
+        span.style.cssText = 'width:18px;height:18px;font-size:11px;font-weight:600;background:#111;border-radius:4px;';
+        span.textContent = (k==='priceAsc')?'↑€':(k==='priceDesc')?'↓€':(k==='rarityAsc')?'↑R':(k==='rarityDesc')?'↓R':'#';
+        return span;
+      }
+      return makeIconDropdown('Tri', options, iconFor, (key) => { currentSort = key; localStorage.setItem('collection.sort', currentSort); page = 1; render(); });
+    }
+    const sortDd = makeSortDropdownC(currentSort);
+    sortDd.setSelected(currentSort || '');
     const searchBar = el('div', { class:'row g-2' },
-      el('div', { class:'col-12 col-md-4 col-lg-4' }, q),
+      el('div', { class:'col-12 col-md-3 col-lg-3' }, q),
       el('div', { class:'col-6 col-md-2 col-lg-2' }, rarityDd.root),
       el('div', { class:'col-6 col-md-2 col-lg-2' }, setSel),
       el('div', { class:'col-6 col-md-2 col-lg-2' }, colorDd.root),
-      el('div', { class:'col-6 col-md-2 col-lg-2' }, typeDd.root)
+      el('div', { class:'col-6 col-md-2 col-lg-2' }, typeDd.root),
+      el('div', { class:'col-6 col-md-1 col-lg-1' }, sortDd.root)
     );
   const actions = el('div', { class:'d-flex justify-content-between align-items-center mt-3' });
   const viewBarC = el('div', { class:'d-flex align-items-center mt-2 mb-1 gap-3' }, viewToggleC.root, missingSwitch);
@@ -1904,7 +2042,44 @@ router.register('#/collection', async (root) => {
     el('h2', {}, 'Ma collection'),
     (function(){ const b=el('button', { class:'btn btn-outline-primary' }, 'Ajouter via caméra'); b.onclick=async(ev)=>{ ev.preventDefault(); try { await openScanModal(); } catch(_){} }; return b; })()
   );
-  root.append(header, searchBar, viewBarC, list, actions);
+  // Progress + valeur cards (insérées entre le titre et la recherche)
+  function mkProgressBarInline(owned, total){ const pct = total?Math.round(owned*100/total):0; return el('div', { class:'progress', style:'height:8px;' }, el('div', { class:'progress-bar bg-success', role:'progressbar', style:`width:${pct}%` })); }
+  const progressCard = el('div', { class:'card bg-dark border-secondary mb-3' },
+    el('div', { class:'card-body py-2' },
+      el('div', { class:'d-flex justify-content-between align-items-center mb-1' },
+        el('span', { class:'small text-muted' }, 'Progression'),
+        el('span', { class:'small fw-semibold', id:'collectionProgressPct' }, '0/0 (0%)')
+      ),
+      mkProgressBarInline(0,0)
+    )
+  );
+  const valueCard = el('div', { class:'card bg-dark border-secondary mb-3' },
+    el('div', { class:'card-body py-2' },
+      el('div', { class:'d-flex justify-content-between align-items-center mb-1' },
+        el('span', { class:'small text-muted' }, 'Valeur estimée'),
+        el('span', { class:'small fw-semibold', id:'collectionValueOwned' }, '0.00€')
+      ),
+      // Suppression de la notion de potentiel restant sur la page Collection
+    )
+  );
+  const metaRow = el('div', { class:'row g-3 mb-1' },
+    el('div', { class:'col-12 col-md-6 col-lg-4' }, progressCard),
+    el('div', { class:'col-12 col-md-6 col-lg-4' }, valueCard)
+  );
+  root.append(header, metaRow, searchBar, viewBarC, list, actions);
+  async function refreshMeta() {
+    try {
+      const stats = await api.statsFull(1); // missingLimit petite valeur suffisant pour owned/missing
+      const g = stats.global || { owned:0, total:0 }; const owned=g.owned||0; const total=g.total||0; const pct= total?Math.round(owned*100/total):0;
+      const val = stats.value || { owned:0, missing:0 }; const ownedVal = Number(val.owned||0).toFixed(2);
+      const pctEl = document.getElementById('collectionProgressPct'); if (pctEl) pctEl.textContent = `${owned}/${total} (${pct}%)`;
+      const prog = progressCard.querySelector('.progress-bar'); if (prog) prog.style.width = `${pct}%`;
+      const vOwnedEl = document.getElementById('collectionValueOwned'); if (vOwnedEl) vOwnedEl.textContent = ownedVal + '€';
+    } catch(e) {
+      // Silencieux: ne bloque pas l'affichage principal
+    }
+  }
+  refreshMeta();
     await fetchAll();
   } catch (e) {
     // Non connecté: rediriger vers la page connexion
@@ -1918,8 +2093,9 @@ router.register('#/p/*', async (root, ctx) => {
   root.innerHTML = '';
   const token = (ctx && ctx.parts && ctx.parts[0]) ? ctx.parts[0] : '';
   if (!token) { root.append(el('div', { class: 'alert alert-warning' }, 'Lien de partage invalide.')); return; }
+  const titleEl = el('h2', { class:'m-0' }, 'Collection partagée');
   const hdr = el('div', { class: 'd-flex justify-content-between align-items-center mb-2 flex-wrap gap-2' },
-    el('h2', { class:'m-0' }, 'Collection partagée'),
+    titleEl,
     el('div', { class:'d-flex flex-wrap gap-2 align-items-center' },
       el('a', { href: '#/' , class: 'btn btn-outline-secondary btn-sm' }, 'Accueil')
     )
@@ -1927,14 +2103,31 @@ router.register('#/p/*', async (root, ctx) => {
   const status = el('div', { class: 'small text-muted mb-2' }, 'Chargement…');
   // Filtres (lecture seule mais appliqués côté client)
   const q = el('input', { class:'form-control form-control-sm', placeholder:'Recherche (nom ou ID)' });
-  const raritySel = el('select', { class:'form-select form-select-sm', style:'min-width:140px' },
-    el('option', { value:'' }, 'Toutes raretés'),
-    el('option', { value:'common' }, 'Commune'),
-    el('option', { value:'uncommon' }, 'Peu commune'),
-    el('option', { value:'rare' }, 'Rare'),
-    el('option', { value:'epic' }, 'Épique'),
-    el('option', { value:'legendary' }, 'Légendaire')
-  );
+  // Rarity icons (reuse local static path; dynamic map could be added later)
+  const rarityIconPath = (key) => 'assets/img/rarity/' + key + '.svg';
+  const rarityDefs = [
+    { key:'', label:'Toutes raretés' },
+    { key:'common', label:'Commune' },
+    { key:'uncommon', label:'Peu commune' },
+    { key:'rare', label:'Rare' },
+    { key:'epic', label:'Épique' },
+    { key:'legendary', label:'Légendaire' },
+    { key:'overnumbered', label:'Overnumbered' }
+  ];
+  const raritySel = (function(){
+    const wrap = el('div', { class:'dropdown w-100' });
+    const btn = el('button', { class:'btn btn-outline-secondary btn-sm w-100 dropdown-toggle d-flex align-items-center gap-2 justify-content-start', type:'button', 'data-bs-toggle':'dropdown', 'aria-expanded':'false' });
+    const menu = el('ul', { class:'dropdown-menu dropdown-menu-dark w-100' });
+    function iconImgSmall(key){ if(!key) return null; const img = document.createElement('img'); img.src = rarityIconPath(key); img.alt = key; img.style.width='18px'; img.style.height='18px'; img.style.objectFit='contain'; img.loading='lazy'; img.decoding='async'; return img; }
+    function setCurrent(k){ const def = rarityDefs.find(d=>d.key===k) || rarityDefs[0]; btn.innerHTML=''; if(def.key){ const ic=iconImgSmall(def.key); if(ic) btn.appendChild(ic); } btn.appendChild(document.createTextNode(' '+def.label)); btn.dataset.value = def.key; }
+    rarityDefs.forEach(def => { const li = el('li'); const a = el('a', { href:'#', class:'dropdown-item d-flex align-items-center gap-2', onclick:(ev)=>{ ev.preventDefault(); setCurrent(def.key); page=1; render(); } }); if(def.key){ const ic=iconImgSmall(def.key); if(ic) a.appendChild(ic); } a.appendChild(document.createTextNode(def.label)); li.appendChild(a); menu.appendChild(li); });
+    setCurrent('');
+    wrap.append(btn, menu);
+    // Expose a value getter to mimic <select>
+    wrap.getValue = () => (btn.dataset.value || '').trim();
+    wrap.classList.add('rarity-filter');
+    return wrap;
+  })();
   const setSel = el('select', { class:'form-select form-select-sm', style:'min-width:140px' },
     el('option', { value:'' }, 'Tous sets'),
     el('option', { value:'OGN' }, 'OGN'),
@@ -1959,7 +2152,6 @@ router.register('#/p/*', async (root, ctx) => {
     el('option', { value:'champion' }, 'Champion'),
     el('option', { value:'battlefield' }, 'Battlefield'),
     el('option', { value:'gear' }, 'Gear'),
-    el('option', { value:'legend' }, 'Legend'),
     el('option', { value:'rune' }, 'Rune'),
     el('option', { value:'token' }, 'Token')
   );
@@ -1976,7 +2168,7 @@ router.register('#/p/*', async (root, ctx) => {
   })();
   const filtersRow = el('div', { class:'row g-2 mb-2 align-items-stretch' },
     el('div', { class:'col-12 col-md-4 col-lg-3' }, q),
-    el('div', { class:'col-6 col-md-2 col-lg-2' }, raritySel),
+  el('div', { class:'col-6 col-md-2 col-lg-2' }, raritySel),
     el('div', { class:'col-6 col-md-2 col-lg-2' }, setSel),
     el('div', { class:'col-6 col-md-2 col-lg-2' }, colorSel),
     el('div', { class:'col-6 col-md-2 col-lg-2' }, typeSel)
@@ -2043,7 +2235,7 @@ router.register('#/p/*', async (root, ctx) => {
   }
   function applyFilters(items){
     const term = q.value.trim().toLowerCase();
-    const r = raritySel.value.trim().toLowerCase();
+  const r = (raritySel.getValue ? raritySel.getValue() : '').trim().toLowerCase();
     const s = setSel.value.trim().toUpperCase();
     const c = colorSel.value.trim().toLowerCase();
     const t = typeSel.value.trim().toLowerCase();
@@ -2099,7 +2291,7 @@ router.register('#/p/*', async (root, ctx) => {
           el('td', {}, img, ' ', el('span', { class:'small fw-semibold' }, it.name||it.card_id||'')),
           el('td', { class:'small text-muted' }, it.card_id||''),
           el('td', { class:'small' }, it.set_code||''),
-          el('td', { class:'small' }, (it.rarity||'').toLowerCase()),
+          el('td', { class:'small' }, (function(){ const rk=(it.rarity||'').toLowerCase(); const ic=rk?el('img',{src:rarityIconPath(rk),alt:rk,style:'height:22px;width:22px;object-fit:contain;border-radius:4px;background:#111;',loading:'lazy',decoding:'async'}):null; return ic?el('span',{class:'d-inline-flex align-items-center gap-2'},ic,rk):rk; })()),
           el('td', { class:'small' }, String(it.qty||0))
         );
         tr.addEventListener('click', ()=>{ if (it.card_id) openCardModal({ id: it.card_id, name: it.name, image_url: it.image_url, set_code: it.set_code, rarity: it.rarity }); });
@@ -2116,7 +2308,7 @@ router.register('#/p/*', async (root, ctx) => {
             el('div', { class: 'flex-grow-1 d-flex justify-content-center align-items-center owned-shine' }, img),
             el('div', { class: 'small fw-semibold mt-1 text-truncate' }, it.name || it.card_id || ''),
             el('div', { class: 'small text-muted' }, it.card_id || ''),
-            el('div', { class: 'small text-muted' }, (it.rarity||'').toLowerCase())
+            (function(){ const rk=(it.rarity||'').toLowerCase(); const ic=rk?el('img',{src:rarityIconPath(rk),alt:rk,style:'height:20px;width:20px;object-fit:contain;border-radius:4px;background:#111;',loading:'lazy',decoding:'async'}):null; return ic?el('div',{class:'small text-muted d-flex align-items-center gap-2'},ic,rk):el('div',{class:'small text-muted'},rk); })()
           ),
           qtyBadge
         );
@@ -2161,6 +2353,11 @@ router.register('#/p/*', async (root, ctx) => {
     allItemsOwned = (data.items||[]);
     allItemsOwned.sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
     status.textContent = allItemsOwned.length ? ('Total cartes possédées: ' + allItemsOwned.reduce((a,c)=>a+(c.qty?1:0),0)) : 'Aucune carte.';
+    // Update title with owner name if provided by API
+    const ownerName = data && data.user && data.user.name ? String(data.user.name) : '';
+    if (ownerName) {
+      titleEl.textContent = 'Collection de ' + ownerName;
+    }
     if (showMissing) { try { await loadAllCards(); } catch {} }
     render();
   } catch (e) {
@@ -2170,27 +2367,185 @@ router.register('#/p/*', async (root, ctx) => {
 
 router.register('#/stats', async (root) => {
   root.innerHTML = '';
+  const header = el('div', { class: 'd-flex align-items-center justify-content-between flex-wrap gap-2 mb-3' },
+    el('h2', { class: 'mb-0' }, 'Statistiques'),
+    el('div', { class: 'small text-muted', id: 'statsUpdated' }, '')
+  );
+  const status = el('div', { class: 'small text-muted mb-2', id: 'statsStatus' }, 'Chargement...');
+  root.append(header, status);
   try {
-    const me = await api.me();
-    const data = await api.statsProgress();
-    root.append(
-      el('h2', {}, 'Statistiques'),
-      el('div', { class: 'mb-3' }, `Progression globale: ${data.global.owned} / ${data.global.total} (${data.global.percent}%)`),
-      el('div', { class: 'row' },
-        el('div', { class: 'col-md-6' },
-          el('h5', {}, 'Par rareté'),
-          el('ul', { class: 'list-group' }, ...data.byRarity.map(r => el('li', { class: 'list-group-item d-flex justify-content-between align-items-center' }, `${r.rarity || '—'}`, el('span', { class: 'badge bg-primary rounded-pill' }, `${r.owned}/${r.total} (${r.percent}%)`))))
+    await api.me(); // ensure logged in
+  } catch (e) {
+    root.append(el('div', { class: 'alert alert-info' }, 'Connectez-vous pour voir vos stats.'));
+    setTimeout(()=>{ location.hash = '#/connexion'; }, 50);
+    return;
+  }
+  try {
+    const data = await api.statsFull(100);
+    // Masquer le statut au lieu de le supprimer pour pouvoir l'afficher en cas d'erreur ultérieure
+    status.textContent = '';
+    status.classList.add('d-none');
+    const upd = data.updated_at ? new Date(data.updated_at * 1000).toLocaleTimeString('fr-FR') : '';
+    document.getElementById('statsUpdated').textContent = upd ? ('Mis à jour à ' + upd) : '';
+
+    const mkProgressBar = (owned, total, label, height = 6) => {
+      const pct = total ? Math.round(owned * 100 / total) : 0;
+      return el('div', { class: 'mb-2' },
+        el('div', { class: 'd-flex justify-content-between align-items-center mb-1' },
+          el('span', { class: 'small' }, label),
+          el('span', { class: 'small fw-semibold' }, `${owned}/${total} (${pct}%)`)
         ),
-        el('div', { class: 'col-md-6' },
-          el('h5', {}, 'Par set'),
-          el('ul', { class: 'list-group' }, ...data.bySet.map(s => el('li', { class: 'list-group-item d-flex justify-content-between align-items-center' }, `${s.set || '—'}`, el('span', { class: 'badge bg-secondary rounded-pill' }, `${s.owned}/${s.total} (${s.percent}%)`))))
+        el('div', { class: 'progress', style: `height:${height}px;` },
+          el('div', { class: 'progress-bar bg-success', role: 'progressbar', style: `width:${pct}%` })
         )
+      );
+    };
+
+    // Global card (robuste même si certaines clés manquent)
+    const g = (data && data.global) ? data.global : { owned: 0, total: 0 };
+    const setsSimple = Array.isArray(data?.bySet) ? data.bySet : [];
+    const setsSection = el('div', { class: 'mt-3' },
+      el('div', { class: 'small text-muted mb-1' }, 'Par set'),
+      setsSimple.length
+        ? el('div', { class: 'd-grid gap-2', style: 'max-height:240px;overflow:auto;' },
+            ...setsSimple.map(s => mkProgressBar(Number(s.owned||0), Number(s.total||0), s.set || '—', 6))
+          )
+        : el('div', { class: 'small text-muted' }, 'Aucun set')
+    );
+    const globalCard = el('div', { class: 'card bg-dark border-secondary mb-3' },
+      el('div', { class: 'card-body' },
+        el('div', { class: 'h5 mb-2' }, 'Progression globale'),
+        mkProgressBar(Number(g.owned||0), Number(g.total||0), 'Collection', 8),
+        setsSection
       )
     );
+
+    const listSection = (title, arr, keyField) => {
+      const grp = el('div', { class: 'card bg-dark border-secondary h-100' },
+        el('div', { class: 'card-body d-flex flex-column' },
+          el('div', { class: 'h6 mb-3' }, title),
+          arr.length ? el('div', { class: 'list-group list-group-flush flex-grow-1 overflow-auto' },
+            ...arr.map(r => {
+              const k = (r[keyField] || '—');
+              const owned = r.owned||0; const tot = r.total||0; const pct = tot?Math.round(owned*100/tot):0;
+              return el('div', { class: 'list-group-item bg-transparent d-flex justify-content-between align-items-center py-1 px-2' },
+                el('span', { class: 'small text-truncate', style:'max-width:55%' }, k),
+                el('span', { class: 'badge rounded-pill text-bg-primary' }, `${owned}/${tot} (${pct}%)`)
+              );
+            })
+          ) : el('div', { class: 'small text-muted' }, 'Aucune donnée')
+        )
+      );
+      return grp;
+    };
+
+    // Duplicates section
+    const dup = data.duplicates || { count:0, items: [] };
+    const duplicatesCard = el('div', { class: 'card bg-dark border-secondary mb-3' },
+      el('div', { class: 'card-body' },
+        el('div', { class: 'h6 mb-2' }, `Doublons (${dup.count})`),
+        dup.items.length ? el('div', { class: 'table-responsive', style:'max-height:240px;overflow:auto;' },
+          el('table', { class: 'table table-sm table-dark table-striped align-middle mb-0' },
+            el('thead', {}, el('tr', {},
+              el('th', { class:'text-muted fw-normal small' }, 'ID'),
+              el('th', { class:'text-muted fw-normal small' }, 'Nom'),
+              el('th', { class:'text-muted fw-normal small' }, 'Set'),
+              el('th', { class:'text-muted fw-normal small' }, 'Rareté'),
+              el('th', { class:'text-muted fw-normal small text-end' }, 'Prix'),
+              el('th', { class:'text-muted fw-normal small text-end' }, 'Qté')
+            )),
+            el('tbody', {}, ...dup.items.map(d => el('tr', {},
+              el('td', { class:'small' }, d.id||''),
+              el('td', { class:'small' }, d.name||''),
+              el('td', { class:'small' }, d.set_code||''),
+              el('td', { class:'small' }, d.rarity||''),
+              el('td', { class:'small text-end' }, (Number(d.price||0)>0)?(Number(d.price).toFixed(2)+'€'):'—'),
+              el('td', { class:'small text-end' }, d.qty||0)
+            )))
+          )
+        ) : el('div', { class: 'small text-muted' }, 'Aucun doublon')
+      )
+    );
+
+    // Missing section
+    const missing = data.missing || { count:0, limit:0, items:[] };
+    const missingCard = el('div', { class: 'card bg-dark border-secondary mb-3' },
+      el('div', { class: 'card-body' },
+        el('div', { class: 'h6 mb-2' }, `Cartes manquantes (${missing.count})`),
+        missing.items.length ? el('div', { class: 'row g-2' }, ...missing.items.map(m => el('div', { class:'col-6 col-md-4 col-lg-3' },
+          el('div', { class:'border rounded small p-2 h-100 d-flex flex-column gap-2 bg-black bg-opacity-25', style:'min-height:260px;' },
+            el('div', { class:'fw-semibold text-truncate', title:m.name||'' }, m.name||''),
+            m.image_url ? el('img', { src:m.image_url, alt:m.name||'', class:'rounded shadow-sm', style:'object-fit:contain;width:100%;height:170px;background:#111;' }) : el('div', { class:'rounded bg-secondary bg-opacity-25 d-flex align-items-center justify-content-center', style:'height:170px;font-size:.7rem;' }, 'Image'),
+            el('div', { class:'d-flex justify-content-between small text-muted mt-auto pt-1 border-top border-secondary' },
+              el('span', {}, m.set_code||''),
+              el('span', {}, m.rarity||''),
+              el('span', { class:'text-end' }, (Number(m.price||0)>0)?(Number(m.price).toFixed(2)+'€'):'')
+            )
+          )
+        ))) : el('div', { class: 'small text-muted' }, 'Aucune carte manquante dans la limite demandée')
+      )
+    );
+
+    // Value estimate
+    const val = data.value || { owned:0, missing:0, currency:'EUR' };
+    const valueCard = el('div', { class:'card bg-dark border-secondary mb-3' },
+      el('div', { class:'card-body' },
+        el('div', { class:'h6 mb-2' }, 'Estimation valeur'),
+        el('div', { class:'small' }, `Possédé: ${(Number(val.owned||0)).toFixed(2)} ${val.currency}`),
+        el('div', { class:'small text-muted' }, `Potentiel restant: ${(Number(val.missing||0)).toFixed(2)} ${val.currency}`)
+      )
+    );
+
+    // Progress by set detailed (heat list)
+    const pbs = (data.progressBySet||[]);
+    const bySetCard = el('div', { class:'card bg-dark border-secondary mb-3' },
+      el('div', { class:'card-body' },
+        el('div', { class:'h6 mb-2' }, 'Progression par set (détail)'),
+        pbs.length ? el('div', { class:'table-responsive', style:'max-height:260px;overflow:auto;' },
+          el('table', { class:'table table-sm table-dark table-striped mb-0 align-middle' },
+            el('thead', {}, el('tr', {},
+              el('th', { class:'text-muted fw-normal small' }, 'Set'),
+              el('th', { class:'text-muted fw-normal small' }, 'Raretés'),
+              el('th', { class:'text-muted fw-normal small text-end' }, 'Progression')
+            )),
+            el('tbody', {}, ...pbs.map(s => {
+              const rarBadges = el('div', { class:'d-flex flex-wrap gap-1' }, ...s.rarities.map(r => {
+                const pct = r.total ? Math.round(r.owned*100/r.total) : 0;
+                const cls = pct>=100?'bg-success':(pct>=50?'bg-warning':'bg-secondary');
+                return el('span', { class:'badge '+cls }, `${r.rarity||'—'} ${pct}%`);
+              }));
+              return el('tr', {},
+                el('td', { class:'small fw-semibold' }, s.set||''),
+                el('td', { class:'small' }, rarBadges),
+                el('td', { class:'small text-end' }, `${s.owned}/${s.total} (${s.percent}%)`)
+              );
+            }))
+          )
+        ) : el('div', { class:'small text-muted' }, 'Aucun set')
+      )
+    );
+
+    // Layout
+    const grid = el('div', { class: 'row g-3' },
+      el('div', { class:'col-12 col-lg-4' }, globalCard, valueCard, duplicatesCard),
+      el('div', { class:'col-12 col-lg-8 d-flex flex-column gap-3' },
+        el('div', { class:'row g-3' },
+          el('div', { class:'col-md-6' }, listSection('Par rareté', data.byRarity||[], 'rarity')),
+          el('div', { class:'col-md-6' }, listSection('Par set (vue simple)', data.bySet||[], 'set')),
+          el('div', { class:'col-md-6' }, listSection('Par couleur', data.byColor||[], 'color')),
+          el('div', { class:'col-md-6' }, listSection('Par type', data.byType||[], 'type'))
+        ),
+        bySetCard,
+        missingCard
+      )
+    );
+    root.append(grid);
+    // Assure que le statut reste masqué si tout s'est bien passé
+    status.classList.add('d-none');
   } catch (e) {
-    // Non connecté: message puis redirection
-    root.append(el('div', { class: 'alert alert-info' }, 'Connectez-vous pour voir vos stats.'));    
-    setTimeout(() => { location.hash = '#/connexion'; }, 50);
+    // Affiche un message visible si une erreur s'est produite durant le rendu
+    status.classList.remove('d-none');
+    status.textContent = 'Erreur chargement stats: ' + (e && e.message ? e.message : 'inconnue');
   }
 });
 
@@ -2519,7 +2874,14 @@ if (location.hash.startsWith('#/guide')) {
 }
 // --- Live price manager (adds "en live" monetary value to each card) ---
 (function () {
-  const DEFAULT_ENDPOINT = 'api.php?action=card.price'; // Backend endpoint to resolve a card id to a price
+  // Build URLs to our PHP API reliably (avoid double '?' bugs)
+  function buildApiUrl(action, params = {}) {
+    const u = new URL('api.php', location.href);
+    if (action) u.searchParams.set('action', action);
+    Object.entries(params).forEach(([k, v]) => { if (v != null) u.searchParams.set(k, String(v)); });
+    return u.toString();
+  }
+  const DEFAULT_ENDPOINT = 'api.php'; // base endpoint; action added via buildApiUrl
   const REFRESH_MS = 60_000; // 60s
   const CACHE_MS = 30_000; // 30s cache to avoid spamming
   const SELECTOR = '[data-card-key], [data-scryfall-id], [data-card-name]';
@@ -2550,11 +2912,11 @@ if (location.hash.startsWith('#/guide')) {
       badge = document.createElement('span');
       badge.className = 'live-price-badge';
       badge.textContent = '...';
-      badge.style.cssText = `
-        position: absolute; top: 8px; right: 8px; z-index: 2;
-        background: rgba(0,0,0,0.7); color: #fff; padding: 2px 8px;
-        border-radius: 12px; font-size: 12px; line-height: 18px;
-      `;
+      badge.title = 'Source : CardMarket';
+      // Ribbon style (top-right corner)
+      badge.style.cssText = `position:absolute;top:0;right:0;z-index:3;background:#1d4ed8;`+
+        `color:#fff;padding:4px 10px 6px;font-size:12px;font-weight:600;line-height:1;`+
+        `border-bottom-left-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.4);letter-spacing:.5px;`;
       const computed = getComputedStyle(cardEl);
       if (computed.position === 'static') {
         cardEl.style.position = 'relative';
@@ -2599,7 +2961,7 @@ if (location.hash.startsWith('#/guide')) {
   }
 
   async function fetchFromBackend(key) {
-    const url = `${DEFAULT_ENDPOINT}?key=${encodeURIComponent(key)}`;
+    const url = buildApiUrl('card.price', { key });
     const res = await fetch(url, { credentials: 'same-origin' });
     if (!res.ok) throw new Error(`Backend price error ${res.status}`);
     const json = await res.json();
@@ -2666,10 +3028,10 @@ if (location.hash.startsWith('#/guide')) {
       badge.textContent = '...';
       const { price, currency } = await resolvePrice(cardEl);
       badge.textContent = formatCurrency(price, currency);
-      badge.title = 'Valeur en live';
+      badge.title = 'Source : CardMarket';
     } catch (e) {
       badge.textContent = '—';
-      badge.title = (e && e.message) || 'Prix indisponible';
+      badge.title = 'Source : CardMarket';
     }
   }
 
@@ -2721,6 +3083,18 @@ if (location.hash.startsWith('#/guide')) {
     document.addEventListener('DOMContentLoaded', scanAndObserve);
   } else {
     scanAndObserve();
+  }
+
+  // Inject global ribbon CSS (overrides legacy badge styling) once
+  if (!document.getElementById('price-ribbon-style')) {
+    const style = document.createElement('style');
+    style.id = 'price-ribbon-style';
+    style.textContent = `
+      .live-price-badge{position:absolute;top:0;right:0;background:#1d4ed8;color:#fff;padding:4px 10px 6px;font-size:12px;font-weight:600;line-height:1;border-bottom-left-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,.4);letter-spacing:.5px;}
+      .live-price-badge.static-price{background:#0d9488;}
+      .card-tile,.collection-card{position:relative;}
+    `;
+    document.head.appendChild(style);
   }
 })();
 

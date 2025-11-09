@@ -26,7 +26,7 @@ final class Auth
         $db = Database::pdo();
         $hash = password_hash($password, PASSWORD_DEFAULT);
         $now = time();
-        $stmt = $db->prepare('INSERT INTO ' . Database::t('users') . ' (email, password_hash, created_at) VALUES (?,?,?)');
+    $stmt = $db->prepare('INSERT INTO ' . Database::t('users') . ' (email, password_hash, created_at) VALUES (?,?,?)');
         try {
             $stmt->execute([$email, $hash, $now]);
         } catch (\PDOException $e) {

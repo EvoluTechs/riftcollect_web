@@ -89,6 +89,7 @@ final class Database
             $db->exec('CREATE TABLE IF NOT EXISTS ' . self::t('users') . ' (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT UNIQUE NOT NULL,
+                display_name TEXT NULL,
                 password_hash TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 share_enabled INTEGER NOT NULL DEFAULT 0,
@@ -202,11 +203,14 @@ final class Database
                 dst_text TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
             )');
-            // Backward-compatible column adds for users (older installs before share feature)
+            // Backward-compatible column adds for users (older installs)
             try {
                 $cols = [];
                 $rs = $db->query('PRAGMA table_info(' . self::t('users') . ')');
                 if ($rs) { foreach ($rs->fetchAll() as $row) { $cols[strtolower((string)$row['name'])] = true; } }
+                if (!isset($cols['display_name'])) {
+                    $db->exec('ALTER TABLE ' . self::t('users') . ' ADD COLUMN display_name TEXT NULL');
+                }
                 if (!isset($cols['share_enabled'])) {
                     $db->exec('ALTER TABLE ' . self::t('users') . ' ADD COLUMN share_enabled INTEGER NOT NULL DEFAULT 0');
                 }
@@ -221,12 +225,15 @@ final class Database
             $db->exec('CREATE TABLE IF NOT EXISTS `' . self::t('users') . '` (
                 `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
                 `email` VARCHAR(255) NOT NULL UNIQUE,
+                `display_name` VARCHAR(255) NULL,
                 `password_hash` VARCHAR(255) NOT NULL,
                 `created_at` INT UNSIGNED NOT NULL,
                 `share_enabled` TINYINT(1) NOT NULL DEFAULT 0,
                 `share_token` VARCHAR(64) NULL UNIQUE,
                 PRIMARY KEY (`id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+            // Backfill display_name on older installs
+            try { $db->exec('ALTER TABLE `' . self::t('users') . '` ADD COLUMN `display_name` VARCHAR(255) NULL'); } catch (\Throwable $e) { /* already exists */ }
 
             $db->exec('CREATE TABLE IF NOT EXISTS `' . self::t('cards_cache') . '` (
                 `id` VARCHAR(32) NOT NULL,
@@ -902,7 +909,8 @@ final class Database
     public static function collectionGet(int $userId): array
     {
         $db = self::pdo();
-    $stmt = $db->prepare('SELECT c.card_id, c.qty, k.name, k.rarity, k.set_code, k.image_url, k.color, k.card_type FROM ' . self::t('collections') . ' c LEFT JOIN ' . self::t('cards_cache') . ' k ON k.id = c.card_id WHERE c.user_id = ? ORDER BY k.name');
+    // Include price so the frontend can display DB override price badges and compute value locally
+    $stmt = $db->prepare('SELECT c.card_id, c.qty, k.name, k.rarity, k.set_code, k.image_url, k.color, k.card_type, COALESCE(k.price, 0) AS price FROM ' . self::t('collections') . ' c LEFT JOIN ' . self::t('cards_cache') . ' k ON k.id = c.card_id WHERE c.user_id = ? ORDER BY k.name');
         $stmt->execute([$userId]);
         $rows = $stmt->fetchAll();
         foreach ($rows as &$r) {
@@ -994,6 +1002,190 @@ final class Database
             'global' => ['owned' => $o, 'total' => $t, 'percent' => $t ? round($o*100/$t, 1) : 0.0],
             'byRarity' => $rarities,
             'bySet' => $sets,
+        ];
+    }
+
+    /**
+     * Advanced statistics for a user collection.
+     * Returns a richer dataset to power the Stats page.
+     */
+    public static function statsFull(int $userId, int $missingLimit = 50): array
+    {
+        $db = self::pdo();
+
+        // Global counts
+        $totalCards = (int)$db->query('SELECT COUNT(*) FROM ' . self::t('cards_cache'))->fetchColumn();
+        $ownedUnique = 0;
+        $stmt = $db->prepare('SELECT COUNT(*) FROM ' . self::t('collections') . ' WHERE user_id = ? AND qty > 0');
+        $stmt->execute([$userId]);
+        $ownedUnique = (int)$stmt->fetchColumn();
+
+        // Helpers for percent rows
+        $mk = function(array $rows, string $kKey, string $kName = 'key') use ($totalCards) {
+            $out = [];
+            foreach ($rows as $r) {
+                $k = (string)($r[$kKey] ?? '');
+                $owned = (int)($r['owned'] ?? 0);
+                $total = (int)($r['total'] ?? 0);
+                $out[] = [
+                    $kName => $k,
+                    'owned' => $owned,
+                    'total' => $total,
+                    'percent' => $total ? round($owned * 100.0 / $total, 1) : 0.0,
+                ];
+            }
+            return $out;
+        };
+
+        // By rarity
+        $rarTot = $db->query('SELECT COALESCE(rarity, "") AS rarity, COUNT(*) AS total FROM ' . self::t('cards_cache') . ' GROUP BY rarity')->fetchAll();
+        $rarOwn = $db->prepare('SELECT COALESCE(k.rarity, "") AS rarity, COUNT(*) AS owned FROM ' . self::t('collections') . ' c JOIN ' . self::t('cards_cache') . ' k ON k.id = c.card_id WHERE c.user_id = ? AND c.qty > 0 GROUP BY k.rarity');
+        $rarOwn->execute([$userId]);
+        $mapTotal = [];
+        foreach ($rarTot as $r) $mapTotal[$r['rarity']] = (int)$r['total'];
+        $mapOwn = [];
+        foreach ($rarOwn->fetchAll() as $r) $mapOwn[$r['rarity']] = (int)$r['owned'];
+        $byRarity = [];
+        foreach ($mapTotal as $k => $tot) {
+            $own = $mapOwn[$k] ?? 0;
+            $byRarity[] = ['rarity' => $k, 'owned' => $own, 'total' => $tot, 'percent' => $tot ? round($own*100/$tot,1) : 0.0];
+        }
+
+        // By set
+        $setTot = $db->query('SELECT COALESCE(set_code, "") AS set_code, COUNT(*) AS total FROM ' . self::t('cards_cache') . ' GROUP BY set_code')->fetchAll();
+        $setOwn = $db->prepare('SELECT COALESCE(k.set_code, "") AS set_code, COUNT(*) AS owned FROM ' . self::t('collections') . ' c JOIN ' . self::t('cards_cache') . ' k ON k.id = c.card_id WHERE c.user_id = ? AND c.qty > 0 GROUP BY k.set_code');
+        $setOwn->execute([$userId]);
+        $setTotalMap = [];
+        foreach ($setTot as $s) $setTotalMap[$s['set_code']] = (int)$s['total'];
+        $setOwnMap = [];
+        foreach ($setOwn->fetchAll() as $s) $setOwnMap[$s['set_code']] = (int)$s['owned'];
+        $bySet = [];
+        foreach ($setTotalMap as $k => $tot) {
+            $own = $setOwnMap[$k] ?? 0;
+            $bySet[] = ['set' => $k, 'owned' => $own, 'total' => $tot, 'percent' => $tot ? round($own*100/$tot,1) : 0.0];
+        }
+
+        // By color
+        $colTot = $db->query('SELECT COALESCE(color, "") AS color, COUNT(*) AS total FROM ' . self::t('cards_cache') . ' GROUP BY color')->fetchAll();
+        $colOwn = $db->prepare('SELECT COALESCE(k.color, "") AS color, COUNT(*) AS owned FROM ' . self::t('collections') . ' c JOIN ' . self::t('cards_cache') . ' k ON k.id = c.card_id WHERE c.user_id = ? AND c.qty > 0 GROUP BY k.color');
+        $colOwn->execute([$userId]);
+        $cTotMap = [];
+        foreach ($colTot as $c) $cTotMap[$c['color']] = (int)$c['total'];
+        $cOwnMap = [];
+        foreach ($colOwn->fetchAll() as $c) $cOwnMap[$c['color']] = (int)$c['owned'];
+        $byColor = [];
+        foreach ($cTotMap as $k => $tot) {
+            $own = $cOwnMap[$k] ?? 0;
+            $byColor[] = ['color' => $k, 'owned' => $own, 'total' => $tot, 'percent' => $tot ? round($own*100/$tot,1) : 0.0];
+        }
+
+        // By type
+        $typTot = $db->query('SELECT COALESCE(card_type, "") AS card_type, COUNT(*) AS total FROM ' . self::t('cards_cache') . ' GROUP BY card_type')->fetchAll();
+        $typOwn = $db->prepare('SELECT COALESCE(k.card_type, "") AS card_type, COUNT(*) AS owned FROM ' . self::t('collections') . ' c JOIN ' . self::t('cards_cache') . ' k ON k.id = c.card_id WHERE c.user_id = ? AND c.qty > 0 GROUP BY k.card_type');
+        $typOwn->execute([$userId]);
+        $tTotMap = [];
+        foreach ($typTot as $t) $tTotMap[$t['card_type']] = (int)$t['total'];
+        $tOwnMap = [];
+        foreach ($typOwn->fetchAll() as $t) $tOwnMap[$t['card_type']] = (int)$t['owned'];
+        $byType = [];
+        foreach ($tTotMap as $k => $tot) {
+            $own = $tOwnMap[$k] ?? 0;
+            $byType[] = ['type' => $k, 'owned' => $own, 'total' => $tot, 'percent' => $tot ? round($own*100/$tot,1) : 0.0];
+        }
+
+        // Duplicates (qty>1)
+    $dupStmt = $db->prepare('SELECT c.card_id AS id, c.qty, k.name, k.set_code, k.rarity, k.color, k.card_type, k.image_url, COALESCE(k.price, 0) AS price FROM ' . self::t('collections') . ' c JOIN ' . self::t('cards_cache') . ' k ON k.id = c.card_id WHERE c.user_id = ? AND c.qty > 1 ORDER BY k.set_code, k.name');
+        $dupStmt->execute([$userId]);
+        $duplicates = $dupStmt->fetchAll();
+        $duplicatesCount = 0;
+        foreach ($duplicates as $d) { $duplicatesCount += max(0, ((int)$d['qty']) - 1); }
+
+        // Missing
+        $missCountStmt = $db->prepare('SELECT COUNT(*) FROM ' . self::t('cards_cache') . ' k LEFT JOIN ' . self::t('collections') . ' c ON c.card_id = k.id AND c.user_id = ? WHERE (c.qty IS NULL OR c.qty <= 0)');
+        $missCountStmt->execute([$userId]);
+        $missingCount = (int)$missCountStmt->fetchColumn();
+    $missStmt = $db->prepare('SELECT k.id, k.name, k.set_code, k.rarity, k.color, k.card_type, k.image_url, COALESCE(k.price,0) AS price FROM ' . self::t('cards_cache') . ' k LEFT JOIN ' . self::t('collections') . ' c ON c.card_id = k.id AND c.user_id = :uid WHERE (c.qty IS NULL OR c.qty <= 0) ORDER BY k.set_code, k.id LIMIT :limit');
+    $missStmt->bindValue(':uid', (int)$userId, \PDO::PARAM_INT);
+    $missStmt->bindValue(':limit', max(1, $missingLimit), \PDO::PARAM_INT);
+    $missStmt->execute();
+        $missing = $missStmt->fetchAll();
+
+        // Value estimate
+        // Prefer explicit card price when present, otherwise rough mapping by rarity
+        $priceMap = [
+            'common' => 0.10,
+            'commune' => 0.10,
+            'uncommon' => 0.25,
+            'peu commune' => 0.25,
+            'rare' => 1.00,
+            'epic' => 3.50,
+            'epique' => 3.50,
+            'legendary' => 8.00,
+            'legendaire' => 8.00,
+            'overnumbered' => 15.00,
+        ];
+
+        $valStmt = $db->prepare('SELECT c.qty, COALESCE(k.price, 0) AS price, COALESCE(k.rarity, "") AS rarity FROM ' . self::t('collections') . ' c JOIN ' . self::t('cards_cache') . ' k ON k.id = c.card_id WHERE c.user_id = ? AND c.qty > 0');
+        $valStmt->execute([$userId]);
+        $ownedValue = 0.0;
+        while ($row = $valStmt->fetch()) {
+            $qty = (int)($row['qty'] ?? 0);
+            $price = (float)($row['price'] ?? 0);
+            if ($price <= 0) {
+                $rar = strtolower((string)($row['rarity'] ?? ''));
+                $price = (float)($priceMap[$rar] ?? 0.0);
+            }
+            $ownedValue += max(0, $qty) * max(0.0, $price);
+        }
+
+        $missValStmt = $db->query('SELECT COALESCE(SUM(CASE WHEN k.price IS NOT NULL AND k.price > 0 THEN k.price ELSE 
+            CASE LOWER(COALESCE(k.rarity, ""))
+                WHEN "common" THEN 0.10 WHEN "commune" THEN 0.10 
+                WHEN "uncommon" THEN 0.25 WHEN "peu commune" THEN 0.25 
+                WHEN "rare" THEN 1.00 
+                WHEN "epic" THEN 3.50 WHEN "epique" THEN 3.50 
+                WHEN "legendary" THEN 8.00 WHEN "legendaire" THEN 8.00 
+                WHEN "overnumbered" THEN 15.00 
+                ELSE 0.00 END END),0) AS v FROM ' . self::t('cards_cache') . ' k LEFT JOIN ' . self::t('collections') . ' c ON c.card_id = k.id AND c.user_id = ' . (int)$userId . ' WHERE (c.qty IS NULL OR c.qty <= 0)');
+        $missingValue = (float)($missValStmt->fetch()['v'] ?? 0);
+
+        // Progress by set detailed (rarity breakdown)
+        $pbs = [];
+        $rows = $db->query('SELECT set_code, COALESCE(rarity, "") AS rarity, COUNT(*) AS total FROM ' . self::t('cards_cache') . ' GROUP BY set_code, rarity')->fetchAll();
+        $ownedRows = $db->prepare('SELECT k.set_code AS set_code, COALESCE(k.rarity, "") AS rarity, COUNT(*) AS owned FROM ' . self::t('collections') . ' c JOIN ' . self::t('cards_cache') . ' k ON k.id = c.card_id WHERE c.user_id = ? AND c.qty > 0 GROUP BY k.set_code, k.rarity');
+        $ownedRows->execute([$userId]);
+        $map = [];
+        foreach ($rows as $r) {
+            $set = (string)($r['set_code'] ?? ''); $rar = (string)($r['rarity'] ?? '');
+            if (!isset($map[$set])) $map[$set] = [];
+            $map[$set][$rar] = ['total' => (int)$r['total'], 'owned' => 0];
+        }
+        foreach ($ownedRows->fetchAll() as $r) {
+            $set = (string)($r['set_code'] ?? ''); $rar = (string)($r['rarity'] ?? '');
+            if (!isset($map[$set])) $map[$set] = [];
+            if (!isset($map[$set][$rar])) $map[$set][$rar] = ['total' => 0, 'owned' => 0];
+            $map[$set][$rar]['owned'] = (int)$r['owned'];
+        }
+        foreach ($map as $set => $rarities) {
+            $items = [];
+            $own = 0; $tot = 0;
+            foreach ($rarities as $rar => $vals) { $own += (int)$vals['owned']; $tot += (int)$vals['total']; $items[] = ['rarity' => $rar, 'owned' => (int)$vals['owned'], 'total' => (int)$vals['total']]; }
+            $pbs[] = ['set' => $set, 'owned' => $own, 'total' => $tot, 'percent' => $tot ? round($own*100/$tot,1) : 0.0, 'rarities' => $items];
+        }
+        // Sort by set code
+        usort($pbs, function($a,$b){ return strcmp((string)$a['set'], (string)$b['set']); });
+
+        return [
+            'global' => ['owned' => $ownedUnique, 'total' => $totalCards, 'percent' => $totalCards ? round($ownedUnique*100/$totalCards, 1) : 0.0],
+            'byRarity' => $byRarity,
+            'bySet' => $bySet,
+            'byColor' => $byColor,
+            'byType' => $byType,
+            'duplicates' => ['count' => $duplicatesCount, 'items' => $duplicates],
+            'missing' => ['count' => $missingCount, 'limit' => $missingLimit, 'items' => $missing],
+            'value' => ['owned' => round($ownedValue, 2), 'missing' => round($missingValue, 2), 'currency' => 'EUR'],
+            'progressBySet' => $pbs,
+            'updated_at' => time(),
         ];
     }
 

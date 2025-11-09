@@ -154,9 +154,14 @@ try {
             if ($method !== 'POST') json_error('Méthode non autorisée', 405);
             $email = trim($_POST['email'] ?? '');
             $password = $_POST['password'] ?? '';
+            $displayName = trim($_POST['display_name'] ?? '');
             if (!filter_var($email, FILTER_VALIDATE_EMAIL)) json_error('Email invalide');
             if (strlen($password) < 8) json_error('Mot de passe trop court (min 8)');
             $uid = Auth::register($email, $password);
+            // Optionally set display_name right after registration
+            if ($displayName !== '') {
+                try { $db->prepare('UPDATE ' . Database::t('users') . ' SET display_name = ? WHERE id = ?')->execute([$displayName, $uid]); } catch (\Throwable $e) { /* ignore */ }
+            }
             json_ok(['user_id' => $uid]);
 
         case 'login':
@@ -174,7 +179,12 @@ try {
         case 'me':
             $u = Auth::user();
             if (!$u) json_error('Non connecté', 401);
-            json_ok(['user' => ['id' => $u['id'], 'email' => $u['email'], 'is_admin' => Auth::isAdmin()]]);
+            // Include display_name if available
+            $stmt = $db->prepare('SELECT COALESCE(NULLIF(display_name, \'\'), email) AS uname FROM ' . Database::t('users') . ' WHERE id = ? LIMIT 1');
+            $stmt->execute([$u['id']]);
+            $row = $stmt->fetch();
+            $name = $row['uname'] ?? $u['email'];
+            json_ok(['user' => ['id' => $u['id'], 'email' => $u['email'], 'name' => $name, 'is_admin' => Auth::isAdmin()]]);
 
         case 'cards.list':
             // Filters: q (search), rarity, set, page, pageSize
@@ -509,13 +519,18 @@ try {
             json_ok(['items' => $items]);
 
         case 'collection.public':
-            // Read-only access by share token
+            // Read-only access by share token + include owner display name
             $token = trim((string)($_GET['token'] ?? ''));
             if ($token === '') json_error('token manquant', 400);
             $uid = Database::userIdByShareToken($token);
             if (!$uid) json_error('Lien invalide ou désactivé', 404);
             $items = Database::collectionGet($uid);
-            json_ok(['items' => $items]);
+            // Fetch user display name (fallback email if display_name empty)
+            $stmt = $db->prepare('SELECT COALESCE(NULLIF(display_name, \'\'), email) AS uname FROM ' . Database::t('users') . ' WHERE id = ? LIMIT 1');
+            $stmt->execute([$uid]);
+            $urow = $stmt->fetch();
+            $uname = $urow['uname'] ?? '';
+            json_ok(['items' => $items, 'user' => [ 'name' => $uname ]]);
 
         case 'collection.set':
             $u = Auth::requireUser();
@@ -539,20 +554,31 @@ try {
             $stats = Database::statsProgress($u['id']);
             json_ok($stats);
 
+        case 'stats.full':
+            $u = Auth::requireUser();
+            $limit = max(1, min(500, (int)($_GET['limit'] ?? 50)));
+            $stats = Database::statsFull($u['id'], $limit);
+            json_ok($stats);
+
         case 'expansions.list':
             $list = Database::expansionsList();
             json_ok(['expansions' => $list]);
 
-        case 'card.price':
+    case 'card.price':
             // Lightweight pricing stub for live badge. Replace with a real provider when available.
             // Params: key (card id like OGN-030)
             $key = trim((string)($_GET['key'] ?? ''));
             if ($key === '') json_error('key manquant', 400);
             // Fetch minimal info
-            $stmt = $db->prepare('SELECT id, rarity, data_json FROM ' . Database::t('cards_cache') . ' WHERE id = ? LIMIT 1');
+            $stmt = $db->prepare('SELECT id, rarity, data_json, price FROM ' . Database::t('cards_cache') . ' WHERE id = ? LIMIT 1');
             $stmt->execute([$key]);
             $row = $stmt->fetch();
             if (!$row) json_error('Carte introuvable', 404);
+            // If a real price is stored in DB, return it directly
+            $dbPrice = isset($row['price']) ? (float)$row['price'] : 0.0;
+            if ($dbPrice > 0) {
+                json_ok(['price' => round($dbPrice, 2), 'currency' => 'EUR']);
+            }
             $rar = strtolower((string)($row['rarity'] ?? ''));
             // If rarity is embedded in JSON, try to extract
             if ($rar === '' && !empty($row['data_json'])) {
@@ -594,7 +620,12 @@ try {
                 $basePath = $path === '' ? '' : $path;
                 $shareUrl = $base . $basePath . '/#/p/' . rawurlencode($info['token']);
             }
-            json_ok(['enabled' => $info['enabled'], 'token' => $info['token'], 'url' => $shareUrl]);
+            // Include friendly user name for UI convenience
+            $stmt = $db->prepare('SELECT COALESCE(NULLIF(display_name, \'\'), email) AS uname FROM ' . Database::t('users') . ' WHERE id = ? LIMIT 1');
+            $stmt->execute([$u['id']]);
+            $row = $stmt->fetch();
+            $name = $row['uname'] ?? ($u['email'] ?? '');
+            json_ok(['enabled' => $info['enabled'], 'token' => $info['token'], 'url' => $shareUrl, 'user' => ['name' => $name]]);
 
         case 'share.set':
             $u = Auth::requireUser();
@@ -608,7 +639,22 @@ try {
                 $basePath = $path === '' ? '' : $path;
                 $shareUrl = $base . $basePath . '/#/p/' . rawurlencode($info['token']);
             }
-            json_ok(['enabled' => $info['enabled'], 'token' => $info['token'], 'url' => $shareUrl]);
+            // Also return user name for UI to display consistently
+            $stmt = $db->prepare('SELECT COALESCE(NULLIF(display_name, \'\'), email) AS uname FROM ' . Database::t('users') . ' WHERE id = ? LIMIT 1');
+            $stmt->execute([$u['id']]);
+            $row = $stmt->fetch();
+            $name = $row['uname'] ?? ($u['email'] ?? '');
+            json_ok(['enabled' => $info['enabled'], 'token' => $info['token'], 'url' => $shareUrl, 'user' => ['name' => $name]]);
+
+        case 'user.setName':
+            // Update display_name for logged-in user
+            $u = Auth::requireUser();
+            if ($method !== 'POST') json_error('Méthode non autorisée', 405);
+            $name = trim((string)($_POST['name'] ?? ''));
+            if (mb_strlen($name) > 255) json_error('Nom trop long');
+            $stmt = $db->prepare('UPDATE ' . Database::t('users') . ' SET display_name = ? WHERE id = ?');
+            $stmt->execute([$name, $u['id']]);
+            json_ok(['name' => $name]);
 
         default:
             json_error('Action inconnue', 404, ['action' => $action]);

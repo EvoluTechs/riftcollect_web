@@ -37,6 +37,11 @@ footer{margin-top:2rem;font-size:.65rem;color:#94a3b8;}
 .search-inline button:hover{background:#1d4ed8;}
 .mini-img{width:38px;height:auto;border-radius:4px;border:1px solid #2a3136;background:#0f1113;}
 .table-wrap{background:#1b1f24;border:1px solid #2a3136;border-radius:6px;overflow:hidden;}
+/* pagination */
+.pagination{--bs-pagination-bg:#101418;--bs-pagination-border-color:#2a3136;--bs-pagination-color:#e2e8f0}
+.pagination .page-link{background:var(--bs-pagination-bg);border-color:var(--bs-pagination-border-color);color:var(--bs-pagination-color);}
+.pagination .page-link:hover{background:#111827;color:#fff}
+.pagination .active .page-link{background:#2563eb;border-color:#1d4ed8}
 </style>
 </style>
 </head>
@@ -98,11 +103,17 @@ footer{margin-top:2rem;font-size:.65rem;color:#94a3b8;}
       <tbody></tbody>
     </table>
   </div>
+  <nav class="d-flex justify-content-between align-items-center mt-2" aria-label="Pagination cartes">
+    <div id="pageInfo" class="text-secondary small"></div>
+    <ul id="paginator" class="pagination pagination-sm mb-0"></ul>
+  </nav>
   <footer class="mt-3">Edition rapide des métadonnées (nom, rareté, prix, etc.).</footer>
 </div>
 <script>
 const apiBase = 'api.php';
 const statusEl = document.getElementById('status');
+let currentPage = 1;
+let currentPageSize = 50;
 function setStatus(msg, ok=true){ statusEl.textContent = msg; statusEl.style.color = ok?'#22c55e':'#ef4444'; }
 async function apiGet(params){
   const url = apiBase + '?' + new URLSearchParams(params).toString();
@@ -121,10 +132,16 @@ async function loadCards(page=1){
   const rarity = document.getElementById('rarity').value.trim();
   const set = document.getElementById('set').value.trim();
   try{
-    const js = await apiGet({action:'cards.list', q, rarity, set, page, pageSize:50});
+    const js = await apiGet({action:'cards.list', q, rarity, set, page, pageSize:currentPageSize});
     if(!js.ok) throw new Error(js.error||'Erreur');
-    renderCards(js.data.items||[]);
-    setStatus((js.data.total||0)+' cartes');
+    const items = js.data.items||[];
+    const total = js.data.total||0;
+    const pg = js.data.page||page;
+    const ps = js.data.pageSize||currentPageSize;
+    currentPage = pg; currentPageSize = ps;
+    renderCards(items);
+    renderPagination(total, pg, ps);
+    setStatus(total+' cartes');
   }catch(e){ setStatus(e.message,false); }
 }
 function renderCards(items){
@@ -164,9 +181,35 @@ async function saveRow(tr,id){
     tr.classList.remove('row-editing');
   }catch(e){ setStatus(e.message,false); tr.classList.remove('row-editing'); }
 }
+function renderPagination(total, page, pageSize){
+  const ul = document.getElementById('paginator');
+  const info = document.getElementById('pageInfo');
+  const pages = Math.max(1, Math.ceil(total / Math.max(1,pageSize)));
+  const cur = Math.min(Math.max(1,page), pages);
+  info.textContent = `Page ${cur} / ${pages} • ${total} résultats`;
+  // window of pages around current
+  const mkLi = (label, targetPage, disabled=false, active=false)=>{
+    const li = document.createElement('li');
+    li.className = 'page-item' + (disabled?' disabled':'') + (active?' active':'');
+    const a = document.createElement('a'); a.href = '#'; a.className='page-link'; a.textContent = label;
+    if(!disabled){ a.addEventListener('click', (ev)=>{ ev.preventDefault(); loadCards(targetPage); }); }
+    li.appendChild(a); return li;
+  };
+  ul.innerHTML='';
+  ul.appendChild(mkLi('«', 1, cur===1));
+  ul.appendChild(mkLi('‹', Math.max(1, cur-1), cur===1));
+  const span = 2; let start = Math.max(1, cur - span); let end = Math.min(pages, cur + span);
+  if (end - start < span*2) { // ensure fixed width when possible
+    if (start === 1) end = Math.min(pages, start + span*2);
+    else if (end === pages) start = Math.max(1, end - span*2);
+  }
+  for(let p=start; p<=end; p++) ul.appendChild(mkLi(String(p), p, false, p===cur));
+  ul.appendChild(mkLi('›', Math.min(pages, cur+1), cur===pages));
+  ul.appendChild(mkLi('»', pages, cur===pages));
+}
 // Initial load
 loadCards();
-document.getElementById('btnSearch').addEventListener('click',()=>loadCards());
+document.getElementById('btnSearch').addEventListener('click',()=>loadCards(1));
 document.getElementById('btnReset').addEventListener('click',()=>{ document.getElementById('q').value=''; document.getElementById('rarity').value=''; document.getElementById('set').value=''; loadCards(); });
 </script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>

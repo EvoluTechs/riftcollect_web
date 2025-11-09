@@ -36,11 +36,13 @@ export const api = {
   collectionSet: (card_id, qty) => request({ action: 'collection.set' }, (() => { const fd = new FormData(); fd.append('card_id', card_id); fd.append('qty', qty); return fd; })()),
   collectionBulkSet: (items) => request({ action: 'collection.bulkSet' }, items),
   statsProgress: () => request({ action: 'stats.progress' }),
+  statsFull: (limit = 50) => request({ action: 'stats.full', limit }),
   expansionsList: () => request({ action: 'expansions.list' }),
   subscribe: (enabled) => request({ action: 'subscribe' }, (() => { const fd = new FormData(); fd.append('enabled', enabled ? '1' : '0'); return fd; })()),
   rarityIcons: () => request({ action: 'rarity.icons' }),
   shareInfo: () => request({ action: 'share.info' }),
   shareSet: (enabled) => request({ action: 'share.set' }, (() => { const fd = new FormData(); fd.append('enabled', enabled ? '1':'0'); return fd; })()),
+  userSetName: (name) => request({ action: 'user.setName' }, (() => { const fd = new FormData(); fd.append('name', name); return fd; })()),
   collectionPublic: (token) => request({ action: 'collection.public', token }),
   // Articles
   articlesList: (opts = {}) => request({ action: 'articles.list', ...(opts || {}) }),
